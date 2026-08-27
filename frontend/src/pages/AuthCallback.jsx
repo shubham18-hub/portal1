@@ -27,7 +27,8 @@ const AuthCallback = () => {
                 } catch { /* noop */ }
                 window.history.replaceState(null, "", window.location.pathname);
                 const role = res.data.user.role;
-                nav(role === "admin" ? "/admin" : "/dashboard", { replace: true, state: { user: res.data.user } });
+                const dest = role === "admin" ? "/admin" : role === "faculty" ? "/faculty" : "/dashboard";
+                nav(dest, { replace: true, state: { user: res.data.user } });
             } catch (err) {
                 const detail = err?.response?.data?.detail || "";
                 const kind = detail.toLowerCase().includes("domain") ? "domain" : "1";

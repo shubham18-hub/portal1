@@ -912,6 +912,355 @@ async def export_data(request: Request, fmt: str = Query("csv"), cycle_id: Optio
                               headers={"Content-Disposition": "attachment; filename=klecba_responses.csv"})
 
 
+# ---------------- Faculty Portal (anonymous own insights) ----------------
+@api.get("/faculty/me/insights")
+async def faculty_me_insights(request: Request):
+    user = await get_current_user(request)
+    if user["role"] != "faculty":
+        raise HTTPException(403, "Faculty only")
+    fid = user["user_id"]
+    subs = await db.feedback_submissions.find({"faculty_snapshot.faculty_id": fid}, {"_id": 0}).to_list(5000)
+    ratings = []
+    trend_map: Dict[str, List[float]] = {}
+    question_map: Dict[str, Dict[str, Any]] = {}  # q_id -> {label, values[]}
+    subject_map: Dict[str, List[float]] = {}
+    comments: List[Dict[str, Any]] = []
+
+    for s in subs:
+        tsnap = s.get("template_snapshot") or {}
+        q_by_id = {q["id"]: q for q in (tsnap.get("questions") or [])}
+        rating_qids = {qid for qid, q in q_by_id.items() if q.get("type") == "rating"}
+        text_qids = {qid for qid, q in q_by_id.items() if q.get("type") == "text"}
+        month = (s.get("submitted_at") or "")[:7]
+        for f in s.get("faculty_snapshot") or []:
+            if f.get("faculty_id") != fid:
+                continue
+            aid = f.get("assignment_id")
+            ans = (s.get("answers") or {}).get(aid) or {}
+            if not isinstance(ans, dict):
+                continue
+            nums = []
+            for qid, v in ans.items():
+                if qid in rating_qids and isinstance(v, (int, str)) and str(v).isdigit() and 1 <= int(v) <= 5:
+                    n = int(v)
+                    nums.append(n)
+                    label = q_by_id.get(qid, {}).get("label") or qid
+                    qm = question_map.setdefault(qid, {"label": label, "values": []})
+                    qm["values"].append(n)
+                elif qid in text_qids and isinstance(v, str) and v.strip():
+                    # anonymised comment
+                    comments.append({
+                        "subject": f.get("subject_name"),
+                        "text": v.strip(),
+                        "submitted_at": s.get("submitted_at"),
+                    })
+            if nums:
+                avg = sum(nums) / len(nums)
+                ratings.append(avg)
+                trend_map.setdefault(month, []).append(avg)
+                sname = f.get("subject_name") or "—"
+                subject_map.setdefault(sname, []).append(avg)
+
+    overall_avg = round(sum(ratings) / len(ratings), 2) if ratings else 0
+    trend = sorted(
+        [{"month": m, "avg": round(sum(v) / len(v), 2), "count": len(v)} for m, v in trend_map.items()],
+        key=lambda x: x["month"],
+    )
+    question_ratings = [
+        {
+            "question_id": qid,
+            "label": q["label"],
+            "avg": round(sum(q["values"]) / len(q["values"]), 2) if q["values"] else 0,
+            "count": len(q["values"]),
+            "distribution": {str(i): sum(1 for v in q["values"] if v == i) for i in range(1, 6)},
+        }
+        for qid, q in question_map.items()
+    ]
+    question_ratings.sort(key=lambda x: -x["avg"])
+    subject_ratings = [
+        {"subject": s, "avg": round(sum(v) / len(v), 2), "count": len(v)} for s, v in subject_map.items()
+    ]
+    # Show latest 20 anonymised comments
+    comments = sorted(comments, key=lambda c: c["submitted_at"] or "", reverse=True)[:20]
+    return {
+        "overall_avg": overall_avg,
+        "response_count": len(ratings),
+        "trend": trend,
+        "question_ratings": question_ratings,
+        "subject_ratings": subject_ratings,
+        "comments": comments,
+    }
+
+
+# ---------------- Bulk Student Import ----------------
+@api.post("/students/import")
+async def import_students(payload: Dict[str, Any], request: Request):
+    """Accepts CSV text under 'csv' key. Columns (headers): student_id, name, email, program, year, semester, division, academic_year."""
+    await require_admin(request)
+    csv_text = payload.get("csv") or ""
+    dry_run = bool(payload.get("dry_run", False))
+    if not csv_text.strip():
+        raise HTTPException(400, "CSV content required")
+    reader = csv.DictReader(io.StringIO(csv_text))
+
+    programs = {p["name"].lower(): p for p in await db.programs.find({}, {"_id": 0}).to_list(500)}
+    years = {y["name"].lower(): y for y in await db.year_levels.find({}, {"_id": 0}).to_list(50)}
+    sems = {s["name"].lower(): s for s in await db.semesters.find({}, {"_id": 0}).to_list(50)}
+    divs = {d["name"].lower(): d for d in await db.divisions.find({}, {"_id": 0}).to_list(50)}
+    ays = {a["name"].lower(): a for a in await db.academic_years.find({}, {"_id": 0}).to_list(50)}
+    departments_by_program = {p["id"]: p.get("department_id") for p in programs.values()}
+
+    valid: List[Dict[str, Any]] = []
+    invalid: List[Dict[str, Any]] = []
+    row_no = 1
+
+    for row in reader:
+        row_no += 1
+        errors = []
+        email = (row.get("email") or "").strip().lower()
+        name = (row.get("name") or "").strip()
+        student_id = (row.get("student_id") or "").strip()
+        if not email or "@" not in email:
+            errors.append("Missing/invalid email")
+        elif not domain_allowed(email):
+            errors.append(f"Email domain not allowed")
+        if not name:
+            errors.append("Missing name")
+
+        program = (row.get("program") or "").strip().lower()
+        year = (row.get("year") or "").strip().lower()
+        sem = (row.get("semester") or "").strip().lower()
+        div = (row.get("division") or "").strip().lower()
+        ay = (row.get("academic_year") or "").strip().lower()
+
+        prog_obj = programs.get(program) if program else None
+        year_obj = years.get(year) if year else None
+        sem_obj = sems.get(sem) if sem else None
+        div_obj = divs.get(div) if div else None
+        ay_obj = ays.get(ay) if ay else None
+        if program and not prog_obj: errors.append(f"Unknown program: {row.get('program')}")
+        if year and not year_obj: errors.append(f"Unknown year: {row.get('year')}")
+        if sem and not sem_obj: errors.append(f"Unknown semester: {row.get('semester')}")
+        if div and not div_obj: errors.append(f"Unknown division: {row.get('division')}")
+        if ay and not ay_obj: errors.append(f"Unknown academic year: {row.get('academic_year')}")
+
+        record = {
+            "row": row_no, "email": email, "name": name, "student_id": student_id,
+            "program_id": prog_obj["id"] if prog_obj else None,
+            "department_id": departments_by_program.get(prog_obj["id"]) if prog_obj else None,
+            "year_level_id": year_obj["id"] if year_obj else None,
+            "semester_id": sem_obj["id"] if sem_obj else None,
+            "division_id": div_obj["id"] if div_obj else None,
+            "academic_year_id": ay_obj["id"] if ay_obj else None,
+        }
+        if errors:
+            invalid.append({**record, "errors": errors})
+        else:
+            valid.append(record)
+
+    imported = 0
+    updated = 0
+    if not dry_run:
+        for r in valid:
+            existing = await db.users.find_one({"email": r["email"]}, {"_id": 0})
+            if existing:
+                user_id = existing["user_id"]
+                # do not demote admin/faculty via import
+                if existing.get("role") not in ("admin", "faculty"):
+                    await db.users.update_one({"user_id": user_id}, {"$set": {"role": "student", "name": r["name"]}})
+                updated += 1
+            else:
+                user_id = f"user_{uuid.uuid4().hex[:12]}"
+                await db.users.insert_one({
+                    "user_id": user_id, "email": r["email"], "name": r["name"],
+                    "role": "student", "picture": None, "created_at": utcnow_iso(),
+                })
+                imported += 1
+            profile = {
+                "user_id": user_id,
+                "student_id": r["student_id"] or None,
+                "department_id": r["department_id"],
+                "program_id": r["program_id"],
+                "year_level_id": r["year_level_id"],
+                "semester_id": r["semester_id"],
+                "division_id": r["division_id"],
+                "academic_year_id": r["academic_year_id"],
+                "updated_at": utcnow_iso(),
+            }
+            await db.student_profiles.update_one({"user_id": user_id}, {"$set": profile}, upsert=True)
+
+    return {
+        "dry_run": dry_run,
+        "valid_count": len(valid),
+        "invalid_count": len(invalid),
+        "imported": imported,
+        "updated": updated,
+        "invalid_rows": invalid[:200],
+        "sample_valid": valid[:20],
+    }
+
+
+# ---------------- Cycle Reminders ----------------
+@api.get("/reminders/preview")
+async def reminders_preview(request: Request, days_before: int = 2):
+    """List students who have a saved draft and no submission, for cycles ending within `days_before` days."""
+    await require_admin(request)
+    now = datetime.now(timezone.utc)
+    cutoff = (now + timedelta(days=days_before)).isoformat()
+    cycles = await db.feedback_cycles.find({"status": "active", "ends_at": {"$lte": cutoff, "$gte": now.isoformat()}}, {"_id": 0}).to_list(500)
+    result = []
+    for c in cycles:
+        drafts = await db.feedback_drafts.find({"cycle_id": c["id"]}, {"_id": 0}).to_list(2000)
+        for d in drafts:
+            if await db.feedback_submissions.find_one({"user_id": d["user_id"], "cycle_id": c["id"]}):
+                continue
+            user = await db.users.find_one({"user_id": d["user_id"]}, {"_id": 0})
+            if not user:
+                continue
+            last_sent = await db.reminders_sent.find_one({"user_id": d["user_id"], "cycle_id": c["id"]}, {"_id": 0})
+            result.append({
+                "user_id": d["user_id"], "email": user["email"], "name": user["name"],
+                "cycle_id": c["id"], "cycle_name": c["name"], "ends_at": c["ends_at"],
+                "already_reminded": bool(last_sent),
+                "reminded_at": last_sent.get("sent_at") if last_sent else None,
+            })
+    return {
+        "days_before": days_before,
+        "count": len(result),
+        "recipients": result,
+        "email_configured": bool(os.environ.get("RESEND_API_KEY") and os.environ.get("REMINDER_FROM_EMAIL")),
+    }
+
+
+@api.post("/reminders/run")
+async def reminders_run(request: Request, days_before: int = 2, dry_run: bool = True):
+    """Send (or dry-run) reminder emails. Idempotent — will not resend to same user+cycle.
+    Requires RESEND_API_KEY and REMINDER_FROM_EMAIL to actually send."""
+    await require_admin(request)
+    preview = await reminders_preview(request, days_before=days_before)
+    to_send = [r for r in preview["recipients"] if not r["already_reminded"]]
+    resend_key = os.environ.get("RESEND_API_KEY")
+    from_email = os.environ.get("REMINDER_FROM_EMAIL")
+    sent = 0
+    skipped = 0
+    errors: List[str] = []
+    for r in to_send:
+        if dry_run or not resend_key or not from_email:
+            skipped += 1
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as hx:
+                resp = await hx.post(
+                    "https://api.resend.com/emails",
+                    headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
+                    json={
+                        "from": from_email, "to": [r["email"]],
+                        "subject": f"KLECBA · Reminder: your feedback for {r['cycle_name']}",
+                        "html": f"<p>Hi {r['name']},</p><p>Your feedback draft for <strong>{r['cycle_name']}</strong> is still open. It closes on {r['ends_at'][:10]}. Please take a minute to submit it.</p><p>— KLECBA</p>",
+                    },
+                )
+                if resp.status_code >= 300:
+                    errors.append(f"{r['email']}: HTTP {resp.status_code}")
+                    continue
+            await db.reminders_sent.update_one(
+                {"user_id": r["user_id"], "cycle_id": r["cycle_id"]},
+                {"$set": {"user_id": r["user_id"], "cycle_id": r["cycle_id"], "sent_at": utcnow_iso()}}, upsert=True,
+            )
+            sent += 1
+        except Exception as e:
+            errors.append(f"{r['email']}: {e}")
+    return {
+        "dry_run": dry_run,
+        "email_configured": bool(resend_key and from_email),
+        "candidates": len(to_send),
+        "sent": sent, "skipped": skipped, "errors": errors,
+        "required_env": ["RESEND_API_KEY", "REMINDER_FROM_EMAIL"],
+    }
+
+
+# ---------------- Question Insights ----------------
+@api.get("/analytics/question-insights")
+async def question_insights(
+    request: Request,
+    cycle_id: Optional[str] = None,
+    academic_year_id: Optional[str] = None,
+    department_id: Optional[str] = None,
+    program_id: Optional[str] = None,
+    year_level_id: Optional[str] = None,
+    semester_id: Optional[str] = None,
+    division_id: Optional[str] = None,
+    faculty_id: Optional[str] = None,
+    subject_id: Optional[str] = None,
+):
+    await require_admin(request)
+    cycles = {c["id"]: c for c in await db.feedback_cycles.find({}, {"_id": 0}).to_list(2000)}
+    profiles = {p["user_id"]: p for p in await db.student_profiles.find({}, {"_id": 0}).to_list(5000)}
+
+    q: Dict[str, Any] = {}
+    if cycle_id:
+        q["cycle_id"] = cycle_id
+    subs = await db.feedback_submissions.find(q, {"_id": 0}).to_list(10000)
+
+    # filter by cycle/profile scope
+    def scope_ok(s):
+        c = cycles.get(s.get("cycle_id"), {})
+        p = profiles.get(s.get("user_id"), {})
+        for key, val in [("academic_year_id", academic_year_id), ("department_id", department_id),
+                          ("program_id", program_id), ("year_level_id", year_level_id),
+                          ("semester_id", semester_id), ("division_id", division_id)]:
+            if val and (c.get(key) or p.get(key)) != val:
+                return False
+        return True
+
+    subs = [s for s in subs if scope_ok(s)]
+
+    # per faculty x question
+    from collections import defaultdict
+    faculty_names: Dict[str, str] = {}
+    subject_names: Dict[str, str] = {}
+    combos: Dict[str, Dict[str, Any]] = {}  # key: fid|subject|qid
+    for s in subs:
+        tsnap = s.get("template_snapshot") or {}
+        q_by_id = {qq["id"]: qq for qq in (tsnap.get("questions") or []) if qq.get("type") == "rating"}
+        for f in s.get("faculty_snapshot") or []:
+            fid_ = f.get("faculty_id")
+            sname = f.get("subject_name") or "—"
+            sid = f.get("subject_id")
+            if faculty_id and fid_ != faculty_id: continue
+            if subject_id and sid != subject_id: continue
+            faculty_names[fid_] = f.get("faculty_name") or fid_
+            subject_names[sid or ""] = sname
+            aid = f.get("assignment_id")
+            ans = (s.get("answers") or {}).get(aid) or {}
+            if not isinstance(ans, dict): continue
+            for qid, v in ans.items():
+                if qid not in q_by_id: continue
+                if not (isinstance(v, (int, str)) and str(v).isdigit() and 1 <= int(v) <= 5): continue
+                n = int(v)
+                key = f"{fid_}|{sid}|{qid}"
+                c = combos.setdefault(key, {
+                    "faculty_id": fid_, "faculty_name": faculty_names[fid_],
+                    "subject_id": sid, "subject_name": sname,
+                    "question_id": qid, "question_label": q_by_id[qid].get("label") or qid,
+                    "values": [],
+                })
+                c["values"].append(n)
+
+    rows = []
+    for _, c in combos.items():
+        vals = c.pop("values")
+        rows.append({
+            **c,
+            "avg": round(sum(vals) / len(vals), 2),
+            "count": len(vals),
+            "distribution": {str(i): sum(1 for v in vals if v == i) for i in range(1, 6)},
+        })
+    rows.sort(key=lambda x: (x["faculty_name"], x["subject_name"], -x["avg"]))
+    return {"count": len(rows), "rows": rows}
+
+
+
+
 # ---------------- Events (unchanged) ----------------
 class Event(BaseModel):
     id: str = Field(default_factory=lambda: uid())

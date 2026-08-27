@@ -23,6 +23,18 @@ import TemplatesAdmin from "@/pages/admin/TemplatesAdmin";
 import CyclesAdmin from "@/pages/admin/CyclesAdmin";
 import ResponsesAdmin from "@/pages/admin/ResponsesAdmin";
 import EventsAdmin from "@/pages/admin/EventsAdmin";
+import QuestionInsights from "@/pages/admin/QuestionInsights";
+import RemindersAdmin from "@/pages/admin/RemindersAdmin";
+import FacultyPortal from "@/pages/FacultyPortal";
+
+function RoleRedirect() {
+    const { user } = useAuth();
+    if (!user) return null;
+    if (user.role === "admin") return <Navigate to="/admin" replace />;
+    if (user.role === "faculty") return <Navigate to="/faculty" replace />;
+    return <StudentDashboard />;
+}
+
 
 function AppRouter() {
     const location = useLocation();
@@ -30,13 +42,13 @@ function AppRouter() {
         return <AuthCallback />;
     }
     return (
-        <Routes>
-            <Route path="/" element={<Landing />} />
+        <Routes>            <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
             <Route path="/admin/login" element={<AdminLogin />} />
             <Route path="/auth/callback" element={<AuthCallback />} />
 
-            <Route path="/dashboard" element={<ProtectedRoute><StudentDashboard /></ProtectedRoute>} />
+            <Route path="/dashboard" element={<ProtectedRoute><RoleRedirect /></ProtectedRoute>} />
+            <Route path="/faculty" element={<ProtectedRoute roles={["faculty"]}><FacultyPortal /></ProtectedRoute>} />
             <Route path="/feedback/cycle/:cycleId" element={<ProtectedRoute roles={["student"]}><FeedbackWizard /></ProtectedRoute>} />
             <Route path="/events" element={<ProtectedRoute><Events /></ProtectedRoute>} />
             <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
@@ -49,6 +61,8 @@ function AppRouter() {
                 <Route path="templates" element={<TemplatesAdmin />} />
                 <Route path="cycles" element={<CyclesAdmin />} />
                 <Route path="responses" element={<ResponsesAdmin />} />
+                <Route path="insights" element={<QuestionInsights />} />
+                <Route path="reminders" element={<RemindersAdmin />} />
                 <Route path="events" element={<EventsAdmin />} />
                 <Route path="analytics" element={<AdminHome />} />
             </Route>

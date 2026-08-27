@@ -7,7 +7,11 @@ const navFor = (role) => {
     if (role === "admin")
         return [{ label: "Dashboard", to: "/admin" }, { label: "Profile", to: "/profile" }];
     if (role === "faculty")
-        return [{ label: "Events", to: "/events" }, { label: "Profile", to: "/profile" }];
+        return [
+            { label: "My insights", to: "/faculty" },
+            { label: "Events", to: "/events" },
+            { label: "Profile", to: "/profile" },
+        ];
     return [
         { label: "Dashboard", to: "/dashboard" },
         { label: "Events", to: "/events" },
@@ -43,7 +47,7 @@ const Navbar = () => {
         >
             <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
                 <Link
-                    to={user ? (user.role === "admin" ? "/admin" : "/dashboard") : "/"}
+                    to={user ? (user.role === "admin" ? "/admin" : user.role === "faculty" ? "/faculty" : "/dashboard") : "/"}
                     className="flex items-center gap-2.5 group"
                     data-testid="navbar-brand"
                 >
