@@ -1,7 +1,10 @@
-import React from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import Layout from "@/components/Layout";
+import api from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
+import { toast } from "sonner";
 import {
     Sparkles,
     ShieldCheck,
@@ -10,6 +13,10 @@ import {
     Star,
     Calendar,
     BookOpen,
+    FlaskConical,
+    GraduationCap,
+    User,
+    Shield,
 } from "lucide-react";
 
 const Feature = ({ icon: Icon, title, desc }) => (
@@ -26,6 +33,24 @@ const Feature = ({ icon: Icon, title, desc }) => (
 
 const Landing = () => {
     const nav = useNavigate();
+    const { setUser, refresh } = useAuth();
+    const [busy, setBusy] = useState("");
+
+    const enterPreview = async (role) => {
+        setBusy(role);
+        try {
+            const res = await api.post("/auth/dev-preview", { role });
+            setUser(res.data.user);
+            await refresh();
+            const dest = role === "admin" ? "/admin" : role === "faculty" ? "/faculty" : "/dashboard";
+            nav(dest, { replace: true });
+        } catch (e) {
+            toast.error(e?.response?.data?.detail || "Preview failed");
+        } finally {
+            setBusy("");
+        }
+    };
+
     return (
         <Layout bg="hero">
             <section className="relative overflow-hidden">
@@ -83,6 +108,52 @@ const Landing = () => {
                                 Explore
                             </a>
                         </motion.div>
+
+                        <motion.div
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.55, delay: 0.2 }}
+                            className="mt-8 w-full md:max-w-2xl glass rounded-2xl p-5 md:p-6 border border-amber-300/40"
+                            data-testid="dev-preview-panel"
+                        >
+                            <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.22em] text-amber-700 mb-3">
+                                <FlaskConical size={13} strokeWidth={1.8} />
+                                Development preview · testing only
+                            </div>
+                            <p className="text-sm text-slate-600 mb-4">
+                                Open any interface without Google or password. For your private preview environment only.
+                            </p>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                <button
+                                    onClick={() => enterPreview("student")}
+                                    disabled={!!busy}
+                                    className="inline-flex items-center justify-center gap-2 rounded-full bg-slate-900 text-white py-2.5 px-4 text-sm font-medium hover:bg-slate-800 transition-colors disabled:opacity-60"
+                                    data-testid="preview-student-btn"
+                                >
+                                    <GraduationCap size={14} strokeWidth={1.8} />
+                                    {busy === "student" ? "Opening…" : "Preview Student"}
+                                </button>
+                                <button
+                                    onClick={() => enterPreview("faculty")}
+                                    disabled={!!busy}
+                                    className="inline-flex items-center justify-center gap-2 rounded-full bg-slate-900 text-white py-2.5 px-4 text-sm font-medium hover:bg-slate-800 transition-colors disabled:opacity-60"
+                                    data-testid="preview-faculty-btn"
+                                >
+                                    <User size={14} strokeWidth={1.8} />
+                                    {busy === "faculty" ? "Opening…" : "Preview Faculty"}
+                                </button>
+                                <button
+                                    onClick={() => enterPreview("admin")}
+                                    disabled={!!busy}
+                                    className="inline-flex items-center justify-center gap-2 rounded-full bg-[#0055FF] text-white py-2.5 px-4 text-sm font-medium hover:bg-[#0044CC] transition-colors disabled:opacity-60"
+                                    data-testid="preview-admin-btn"
+                                >
+                                    <Shield size={14} strokeWidth={1.8} />
+                                    {busy === "admin" ? "Opening…" : "Preview Admin"}
+                                </button>
+                            </div>
+                        </motion.div>
+
                     </div>
 
                     <motion.div
