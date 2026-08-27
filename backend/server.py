@@ -971,13 +971,32 @@ async def export_data(request: Request, fmt: str = Query("csv"), cycle_id: Optio
                               headers={"Content-Disposition": "attachment; filename=klecba_responses.csv"})
 
 
+@api.get("/feedback/mine")
+async def my_feedback(request: Request):
+    """Legacy compatibility: returns current student's submissions (new + legacy)."""
+    user = await get_current_user(request)
+    if user["role"] != "student":
+        return []
+    subs = await db.feedback_submissions.find({"user_id": user["user_id"]}, {"_id": 0}).sort("submitted_at", -1).to_list(500)
+    return subs
+
+
 # ---------------- Faculty Portal (anonymous own insights) ----------------
 @api.get("/faculty/me/insights")
-async def faculty_me_insights(request: Request):
+async def faculty_me_insights(request: Request, year_level_id: Optional[str] = None, division_id: Optional[str] = None):
     user = await get_current_user(request)
     if user["role"] != "faculty":
         raise HTTPException(403, "Faculty only")
     fid = user["user_id"]
+    # Determine which assignment_ids to scope to when filters are applied
+    scoped_aids: Optional[set] = None
+    if year_level_id or division_id:
+        aq: Dict[str, Any] = {"faculty_id": fid}
+        if year_level_id: aq["year_level_id"] = year_level_id
+        if division_id: aq["division_id"] = division_id
+        assignments = await db.faculty_assignments.find(aq, {"_id": 0, "id": 1}).to_list(2000)
+        scoped_aids = {a["id"] for a in assignments}
+
     subs = await db.feedback_submissions.find({"faculty_snapshot.faculty_id": fid}, {"_id": 0}).to_list(5000)
     ratings = []
     trend_map: Dict[str, List[float]] = {}
@@ -995,6 +1014,8 @@ async def faculty_me_insights(request: Request):
             if f.get("faculty_id") != fid:
                 continue
             aid = f.get("assignment_id")
+            if scoped_aids is not None and aid not in scoped_aids:
+                continue
             ans = (s.get("answers") or {}).get(aid) or {}
             if not isinstance(ans, dict):
                 continue
@@ -1040,6 +1061,12 @@ async def faculty_me_insights(request: Request):
         {"subject": s, "avg": round(sum(v) / len(v), 2), "count": len(v)} for s, v in subject_map.items()
     ]
     # Show latest 20 anonymised comments
+    # Improvement area: lowest-rated question (with enough responses)
+    improvement = None
+    ranked = [q for q in question_ratings if q["count"] >= 1]
+    if ranked:
+        low = min(ranked, key=lambda q: (q["avg"], -q["count"]))
+        improvement = {"label": low["label"], "avg": low["avg"], "count": low["count"]}
     comments = sorted(comments, key=lambda c: c["submitted_at"] or "", reverse=True)[:20]
     return {
         "overall_avg": overall_avg,
@@ -1048,7 +1075,143 @@ async def faculty_me_insights(request: Request):
         "question_ratings": question_ratings,
         "subject_ratings": subject_ratings,
         "comments": comments,
+        "improvement": improvement,
     }
+
+
+@api.get("/faculty/me/scope")
+async def faculty_me_scope(request: Request):
+    """Return the year/division options that this faculty is assigned to."""
+    user = await get_current_user(request)
+    if user["role"] != "faculty":
+        raise HTTPException(403, "Faculty only")
+    assignments = await db.faculty_assignments.find({"faculty_id": user["user_id"]}, {"_id": 0}).to_list(2000)
+    year_ids = {a["year_level_id"] for a in assignments if a.get("year_level_id")}
+    div_ids = {a["division_id"] for a in assignments if a.get("division_id")}
+    years = await db.year_levels.find({"id": {"$in": list(year_ids)}}, {"_id": 0}).sort("order", 1).to_list(50)
+    divs = await db.divisions.find({"id": {"$in": list(div_ids)}}, {"_id": 0}).to_list(50)
+    return {"years": years, "divisions": divs}
+
+
+@api.get("/faculty/me/export")
+async def faculty_me_export(request: Request, fmt: str = Query("csv"), year_level_id: Optional[str] = None, division_id: Optional[str] = None):
+    """Anonymous CSV/XLSX export of the faculty's own scoped ratings. No student PII."""
+    user = await get_current_user(request)
+    if user["role"] != "faculty":
+        raise HTTPException(403, "Faculty only")
+    fid = user["user_id"]
+    scoped_aids: Optional[set] = None
+    if year_level_id or division_id:
+        aq: Dict[str, Any] = {"faculty_id": fid}
+        if year_level_id: aq["year_level_id"] = year_level_id
+        if division_id: aq["division_id"] = division_id
+        assignments = await db.faculty_assignments.find(aq, {"_id": 0}).to_list(2000)
+        scoped_aids = {a["id"] for a in assignments}
+
+    subs = await db.feedback_submissions.find({"faculty_snapshot.faculty_id": fid}, {"_id": 0}).to_list(5000)
+    rows = []
+    for s in subs:
+        tsnap = s.get("template_snapshot") or {}
+        q_by_id = {q["id"]: q for q in (tsnap.get("questions") or [])}
+        for f in s.get("faculty_snapshot") or []:
+            if f.get("faculty_id") != fid: continue
+            aid = f.get("assignment_id")
+            if scoped_aids is not None and aid not in scoped_aids: continue
+            ans = (s.get("answers") or {}).get(aid) or {}
+            if not isinstance(ans, dict): continue
+            for qid, v in ans.items():
+                q = q_by_id.get(qid) or {}
+                rows.append({
+                    "submitted_at": s.get("submitted_at"),
+                    "subject": f.get("subject_name") or "",
+                    "question": q.get("label") or qid,
+                    "type": q.get("type") or "",
+                    "answer": v,
+                })
+    if not rows:
+        rows = [{"info": "no data"}]
+    if fmt == "xlsx":
+        wb = Workbook(); ws = wb.active; ws.title = "My Feedback"
+        ws.append(list(rows[0].keys()))
+        for r in rows: ws.append(list(r.values()))
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                 headers={"Content-Disposition": "attachment; filename=my_feedback.xlsx"})
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+    w.writeheader()
+    for r in rows: w.writerow(r)
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
+                              headers={"Content-Disposition": "attachment; filename=my_feedback.csv"})
+
+
+# ---------------- Student Categories (4 fixed cards) ----------------
+CATEGORY_META = {
+    "student":       {"title": "Student Feedback",       "desc": "Rate your teachers across your enrolled subjects."},
+    "certification": {"title": "Certification Course",   "desc": "Share your experience for certification programmes."},
+    "faculty":       {"title": "Faculty Feedback",       "desc": "Peer/departmental feedback across faculty."},
+    "academic":      {"title": "Academic Feedback",      "desc": "Rate infrastructure, administration and overall experience."},
+}
+
+
+@api.get("/my/categories")
+async def my_categories(request: Request):
+    user = await get_current_user(request)
+    if user["role"] != "student":
+        return []
+    prof = await db.student_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    all_cycles = await db.feedback_cycles.find({}, {"_id": 0}).to_list(2000)
+    tmpls = {t["id"]: t for t in await db.feedback_templates.find({}, {"_id": 0}).to_list(2000)}
+    now_iso = utcnow_iso()
+
+    def match(cycle: Dict[str, Any]) -> bool:
+        if not prof:
+            return False
+        for key in ("department_id", "program_id", "year_level_id", "semester_id", "academic_year_id"):
+            if cycle.get(key) and cycle.get(key) != prof.get(key):
+                return False
+        divs = cycle.get("division_ids") or []
+        if divs and prof.get("division_id") not in divs:
+            return False
+        return True
+
+    out = []
+    for cat, meta in CATEGORY_META.items():
+        # find best matching cycle in this category for this student
+        matching = []
+        for c in all_cycles:
+            t = tmpls.get(c.get("template_id")) or {}
+            if t.get("category") != cat:
+                continue
+            if not match(c):
+                continue
+            matching.append(c)
+        card = {"category": cat, "title": meta["title"], "desc": meta["desc"], "status": "upcoming", "cycle": None, "submitted": False, "has_draft": False}
+        if not matching:
+            out.append(card); continue
+        # Prefer active, then scheduled, then closed
+        def rank(c):
+            s = c.get("status")
+            active = s == "active" and c.get("starts_at", "") <= now_iso <= c.get("ends_at", "")
+            return (0 if active else 1 if s == "scheduled" else 2 if s == "closed" else 3, c.get("ends_at") or "")
+        matching.sort(key=rank)
+        best = matching[0]
+        card["cycle"] = best
+        submitted = bool(await db.feedback_submissions.find_one({"user_id": user["user_id"], "cycle_id": best["id"]}))
+        card["submitted"] = submitted
+        card["has_draft"] = bool(await db.feedback_drafts.find_one({"user_id": user["user_id"], "cycle_id": best["id"]}))
+        s = best.get("status")
+        if submitted:
+            card["status"] = "completed"
+        elif s == "active" and best.get("starts_at", "") <= now_iso <= best.get("ends_at", ""):
+            card["status"] = "ongoing"
+        elif s == "closed" or (best.get("ends_at") and now_iso > best["ends_at"]):
+            card["status"] = "completed"
+        else:
+            card["status"] = "upcoming"
+        out.append(card)
+    return out
+
 
 
 # ---------------- Bulk Student Import ----------------

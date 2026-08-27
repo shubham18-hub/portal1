@@ -16,9 +16,7 @@ const items = [
     { to: "/admin/cycles", label: "Feedback Cycles", icon: ClipboardList },
     { to: "/admin/responses", label: "Responses", icon: MessageSquare },
     { to: "/admin/insights", label: "Question Insights", icon: LineChart },
-    { to: "/admin/reminders", label: "Reminders", icon: Bell },
     { to: "/admin/events", label: "Events", icon: CalendarDays },
-    { to: "/admin/analytics", label: "Analytics", icon: LineChart },
 ];
 
 const AdminShell = () => {

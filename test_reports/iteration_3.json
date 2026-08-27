@@ -1,0 +1,55 @@
+{
+  "summary": "Verified the KLECBA incremental UI/UX + functionality patch (backgrounds, 4 student category cards, Roll No., faculty year/division filters + improvement insight + CSV/XLSX export, Reminders removed from admin nav). Backend: added /app/backend/tests/test_categories_faculty.py (23 tests) covering GET /api/my/categories (4 fixed cards, empty/unassigned -> all 'upcoming' with cycle=null; ongoing after an active scoped cycle; has_draft; completed after submit), /api/faculty/me/scope (assignment-filtered years/divisions + empty arrays with no assignments), /api/faculty/me/insights (year_level_id/division_id scoping + 'improvement' = lowest-avg question, null when no data), /api/faculty/me/export csv+xlsx (headers submitted_at/subject/question/type/answer, no student PII, scope filtering), plus RBAC (student & admin -> 403, anon -> 401). Full suite: 86/86 passed (63 pre-existing regressions + 23 new). Frontend: landing renders the teal asset background + 3 preview buttons; /login shows ONLY 'Continue with Google' on the orange asset background (0 inputs / 0 selects); /admin/login still email+password; preview student /dashboard shows the 5-field profile card with Roll No. (PREVIEW-001) and the 4 category cards with status badges, locked cards do not navigate; end-to-end: created an active student-category cycle + faculty assignment matching the preview student -> card flipped to ONGOING, wizard star rating + comment + submit succeeded (200), card then showed submitted state and faculty portal showed 'Area to improve', populated Year/Division filters and working CSV (my_feedback.csv) / Excel (my_feedback.xlsx) downloads; admin sidebar has no 'Reminders' and all 9 expected links are present. All test data cleaned up (verified via mongosh).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/feedback/mine", "issue": "Endpoint does not exist (404). StudentDashboard.jsx calls it for the 'Your recent responses' list, so that section is permanently empty even right after a successful submission. Either implement /api/feedback/mine or point the UI at an existing endpoint."},
+      {"endpoint": "GET /api/my/categories", "issue": "Returns an empty list (200) for non-student roles instead of 403; every other /my/* route returns 403 for non-students. Inconsistent RBAC contract."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "StudentDashboard category badge", "issue": "Spec asks for three visible statuses (Upcoming/Ongoing/Completed) but a submitted card renders the badge text 'Submitted' (c.submitted ? 'Submitted' : badge.text) instead of 'Completed', so a 4th label appears.", "selector": "[data-testid='cat-status-student']", "priority": "LOW"},
+      {"component": "StudentDashboard locked card", "issue": "Locked cards are <a> elements whose href resolves to the current path (to='#'), so ctrl/middle-click or keyboard Enter can trigger a navigation/reload. Prefer rendering a non-anchor div (or aria-disabled button) when !clickable.", "selector": "[data-testid='cat-card-certification']", "priority": "LOW"},
+      {"component": "FeedbackWizard star rating", "issue": "The 5 star-rating buttons have no data-testid and no accessible name (icon-only), making them unaddressable in tests and for screen readers. Add data-testid like rating-{qid}-{value} plus aria-label.", "selector": "main button (unnamed)", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [
+      {"flow": "Student dashboard -> recent responses", "issue": "GET /api/feedback/mine returns 404 on every dashboard load (swallowed by .catch), leaving 'You haven\\'t submitted any feedback yet.' even after a confirmed submission.", "affected_selectors": ["[data-testid='student-dashboard']"]},
+      {"flow": "Feedback wizard with zero faculty assignments", "issue": "When the student's scope has no faculty assignments the wizard shows 'FACULTY 0 OF 0' and jumps straight to Review with an enabled Submit; POST /my/cycles/{id}/submit then always fails with 400 'Missing faculty items' (toast shown). Pre-existing, but the cycle should be treated as not-applicable or Submit disabled.", "affected_selectors": ["[data-testid='wizard-submit-btn']"]}
+    ],
+    "design_issues": [
+      {"screen": "Landing (/)", "issues": ["The teal asset is almost invisible: the overlay 'linear-gradient(rgba(255,255,255,.72) ... rgba(255,255,255,.72))' washes the image out to near-white. Reduce overlay opacity if the teal artwork is meant to read as the page background."]},
+      {"screen": "Faculty portal 'Area to improve'", "issues": ["The insight is shown even when the lowest question average is 5/5 (\"TEST rate averaged 5/5\"), which reads as a false negative. Consider hiding the banner when avg >= 4.5 or when only one rating question exists."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_categories_faculty.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_dev_preview.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Implement GET /api/feedback/mine (or change StudentDashboard to an existing endpoint) so 'Your recent responses' works and the 404 console noise stops.",
+    "Render the submitted-card badge as 'Completed' to match the documented three statuses.",
+    "Add data-testid + aria-label to the wizard star-rating buttons.",
+    "Optional: return 403 (not []) from /api/my/categories for non-students; lighten the landing-page white overlay so the teal asset is visible; suppress 'Area to improve' when the lowest average is already high."
+  ],
+  "critical_code_review_comments": [
+    "/api/my/categories runs 2 unbounded find() scans (all cycles + all templates, to_list(2000)) plus 2 Mongo round-trips per category on every dashboard load; query cycles by the student's scope and fetch only the templates of the matching cycles.",
+    "The category<->template link relies on template.category matching one of four hardcoded keys; a template created with any other category value silently disappears from the student dashboard. Validate template.category against Literal['student','certification','faculty','academic'] on POST/PUT /templates.",
+    "/api/faculty/me/insights and /api/faculty/me/export duplicate ~30 lines of scoped-assignment + answer-flattening logic; extract a shared helper to keep the CSV and the charts from drifting.",
+    "server.py is 1595 lines - split into routers (auth, structure, templates/cycles, student, faculty, admin analytics)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_categories_faculty.py",
+    "/app/backend/tests/ui_cat_seed.py",
+    "/app/backend/tests/ui_cat_assign.py"
+  ],
+  "success_rate": {"backend": "100% (86/86)", "frontend": "100% of the requested delta flows; 3 minor UI bugs + 2 design notes"},
+  "seed_data_creation": "Backend tests create/delete their own TEST_ division, faculty, assignment, published template, active cycle and student sessions. For the UI e2e I used /app/backend/tests/ui_cat_seed.py (TEST_UICat template + TEST_UICycle active cycle scoped to the preview student) and ui_cat_assign.py (assignment for preview.faculty in BBA/1st Year/Sem 1/Div A); both were deleted afterwards and absence verified via mongosh.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "admin@klecba.edu.in / KlecbaAdmin@2026 (from /app/memory/test_credentials.md); preview roles via POST /api/auth/dev-preview or the landing-page preview-{role}-btn buttons",
+  "context_for_next_testing_agent": "Backend suite = /app/backend/tests/{backend_test.py, test_dev_preview.py, test_categories_faculty.py} -> 86 tests, ~16s, run with `cd /app/backend && python -m pytest tests/ -q` (pytest.ini already sets -n 2 --dist loadscope; keep each stateful flow in ONE class). Fixtures in conftest.py: admin_client, seeded, student_session, anon_client, mongosh(). Useful notes: preview student profile roll = PREVIEW-001 (BBA/1st Year/Semester 1/Div A) but has NO faculty assignment by default, so a student-category cycle for it can only be submitted after adding an assignment (see ui_cat_assign.py). Landing preview buttons use data-testid preview-student-btn / preview-faculty-btn / preview-admin-btn (NOT preview-as-*). inner_text() on the profile/badge labels returns UPPERCASE due to CSS text-transform - compare case-insensitively.",
+  "rca_of_the_issue": "No functional defect in the delta. The only real bug is a dangling frontend call to GET /api/feedback/mine, which was never implemented on the backend; because StudentDashboard swallows the failure with .catch(() => ({data: []})) the 'recent responses' list silently stays empty and a 404 is logged on every load."
+}

@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Layout from "@/components/Layout";
-import api from "@/lib/api";
+import api, { API_BASE } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { Star, MessageCircle, TrendingUp, ShieldCheck } from "lucide-react";
+import { Star, MessageCircle, TrendingUp, ShieldCheck, Download, TriangleAlert } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
 
 const StatCard = ({ label, value, sub, icon: Icon }) => (
@@ -21,14 +21,29 @@ const StatCard = ({ label, value, sub, icon: Icon }) => (
 const FacultyPortal = () => {
     const { user } = useAuth();
     const [ins, setIns] = useState(null);
+    const [scope, setScope] = useState({ years: [], divisions: [] });
+    const [year, setYear] = useState("");
+    const [division, setDivision] = useState("");
+
+    const params = useMemo(() => {
+        const p = new URLSearchParams();
+        if (year) p.set("year_level_id", year);
+        if (division) p.set("division_id", division);
+        return p.toString();
+    }, [year, division]);
 
     useEffect(() => {
-        api.get("/faculty/me/insights").then((r) => setIns(r.data)).catch(() => setIns({ overall_avg: 0, response_count: 0, trend: [], question_ratings: [], subject_ratings: [], comments: [] }));
+        api.get("/faculty/me/scope").then((r) => setScope(r.data)).catch(() => {});
     }, []);
+    useEffect(() => {
+        setIns(null);
+        api.get(`/faculty/me/insights?${params}`).then((r) => setIns(r.data)).catch(() => setIns({ overall_avg: 0, response_count: 0, trend: [], question_ratings: [], subject_ratings: [], comments: [], improvement: null }));
+    }, [params]);
 
     if (!ins) return <Layout><div className="max-w-5xl mx-auto px-6 py-20 text-slate-500">Loading…</div></Layout>;
 
     const empty = ins.response_count === 0;
+    const download = (fmt) => window.open(`${API_BASE}/faculty/me/export?fmt=${fmt}&${params}`, "_blank");
 
     return (
         <Layout>
@@ -43,12 +58,44 @@ const FacultyPortal = () => {
                     </p>
                 </div>
 
+                <div className="glass rounded-2xl p-4 mb-6 flex flex-wrap gap-3 items-center" data-testid="faculty-filters">
+                    <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500 pr-1">Filter</div>
+                    <select value={year} onChange={(e) => setYear(e.target.value)} className="rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm outline-none focus:border-[#0055FF]" data-testid="faculty-year-filter">
+                        <option value="">All years</option>
+                        {scope.years.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}
+                    </select>
+                    <select value={division} onChange={(e) => setDivision(e.target.value)} className="rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm outline-none focus:border-[#0055FF]" data-testid="faculty-div-filter">
+                        <option value="">All divisions</option>
+                        {scope.divisions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
+                    <div className="ml-auto flex gap-2">
+                        <button onClick={() => download("csv")} className="btn-ghost text-sm inline-flex items-center gap-1.5" data-testid="faculty-csv-btn"><Download size={14} /> CSV</button>
+                        <button onClick={() => download("xlsx")} className="btn-ghost text-sm inline-flex items-center gap-1.5" data-testid="faculty-xlsx-btn"><Download size={14} /> Excel</button>
+                    </div>
+                </div>
+
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <StatCard label="Overall rating" value={ins.overall_avg || "—"} sub="out of 5" icon={Star} />
                     <StatCard label="Responses" value={ins.response_count} sub="anonymous" icon={MessageCircle} />
                     <StatCard label="Subjects" value={ins.subject_ratings.length} sub="rated" icon={TrendingUp} />
-                    <StatCard label="Highest question" value={ins.question_ratings[0]?.avg?.toFixed?.(1) || "—"} sub={ins.question_ratings[0]?.label?.slice(0, 22) || ""} icon={Star} />
+                    <StatCard label="Top question" value={ins.question_ratings[0]?.avg?.toFixed?.(1) || "—"} sub={ins.question_ratings[0]?.label?.slice(0, 22) || ""} icon={Star} />
                 </div>
+
+                {ins.improvement && ins.improvement.avg < 4.5 && (
+                    <div className="glass rounded-2xl p-5 mt-5 border border-amber-300/50 flex items-start gap-3" data-testid="improvement-card">
+                        <div className="h-10 w-10 rounded-xl bg-amber-500/15 text-amber-700 grid place-items-center shrink-0">
+                            <TriangleAlert size={16} strokeWidth={1.6} />
+                        </div>
+                        <div>
+                            <div className="text-xs font-bold uppercase tracking-[0.2em] text-amber-700">Area to improve</div>
+                            <div className="font-display text-lg text-slate-900 mt-0.5">"{ins.improvement.label}" averaged {ins.improvement.avg}/5</div>
+                            <div className="text-sm text-slate-600 mt-0.5">Based on {ins.improvement.count} response(s) in the current selection.</div>
+                        </div>
+                    </div>
+                )}
+                {!ins.improvement && empty && (
+                    <div className="glass rounded-2xl p-5 mt-5 text-sm text-slate-500" data-testid="not-enough-data">Not enough feedback data yet.</div>
+                )}
 
                 <div className="grid lg:grid-cols-3 gap-5 mt-6">
                     <div className="glass rounded-2xl p-6 lg:col-span-2">

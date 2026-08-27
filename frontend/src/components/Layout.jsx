@@ -11,10 +11,10 @@ const Layout = ({ children, showFooter = true, bg = "default" }) => {
             {bg === "hero" && (
                 <>
                     <div
-                        className="absolute inset-0 -z-10"
+                        className="absolute inset-0 -z-10 bg-cover bg-center"
                         style={{
-                            background:
-                                "radial-gradient(1200px 600px at 50% -10%, rgba(0,85,255,0.12), transparent 60%), linear-gradient(180deg, #F8FAFC 0%, #EEF2FA 100%)",
+                            backgroundImage:
+                                "linear-gradient(180deg, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0.15) 45%, rgba(255,255,255,0.45) 100%), url('https://customer-assets-lqy194kg.emergentagent.net/job_feedback-hub-408/artifacts/1yift54i_landing%20page.jpeg')",
                         }}
                     />
                 </>

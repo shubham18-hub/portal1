@@ -14,9 +14,13 @@ const Login = () => {
     };
 
     return (
-        <div className="relative min-h-screen bg-[#0A1128] text-white overflow-hidden noise">
-            <div className="glow bg-[#0055FF]" style={{ width: 500, height: 500, left: -120, top: -120, opacity: 0.35 }} />
-            <div className="glow" style={{ width: 500, height: 500, right: -120, bottom: -160, background: "#1e40af", opacity: 0.45 }} />
+        <div
+            className="relative min-h-screen text-white overflow-hidden bg-cover bg-center"
+            style={{
+                backgroundImage:
+                    "linear-gradient(160deg, rgba(30,20,15,0.35) 0%, rgba(20,15,10,0.55) 100%), url('https://customer-assets-lqy194kg.emergentagent.net/job_feedback-hub-408/artifacts/yuc2o6x2_loginpage.jpeg')",
+            }}
+        >
             <div className="relative max-w-5xl mx-auto px-6 min-h-screen grid md:grid-cols-2 items-center gap-10">
                 <div>
                     <a href="/" className="inline-flex items-center gap-2.5 mb-10 group">
