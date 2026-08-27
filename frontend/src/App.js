@@ -1,56 +1,74 @@
-import { useEffect } from "react";
+import React from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
+import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { Toaster } from "sonner";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import Landing from "@/pages/Landing";
+import Login from "@/pages/Login";
+import AdminLogin from "@/pages/AdminLogin";
+import AuthCallback from "@/pages/AuthCallback";
+import StudentDashboard from "@/pages/StudentDashboard";
+import FeedbackWizard from "@/pages/FeedbackWizard";
+import Events from "@/pages/Events";
+import Profile from "@/pages/Profile";
+import ProtectedRoute from "@/components/ProtectedRoute";
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
+import AdminShell from "@/components/AdminShell";
+import AdminHome from "@/pages/admin/AdminHome";
+import AcademicStructure from "@/pages/admin/AcademicStructure";
+import FacultyAdmin from "@/pages/admin/FacultyAdmin";
+import StudentsAdmin from "@/pages/admin/StudentsAdmin";
+import TemplatesAdmin from "@/pages/admin/TemplatesAdmin";
+import CyclesAdmin from "@/pages/admin/CyclesAdmin";
+import ResponsesAdmin from "@/pages/admin/ResponsesAdmin";
+import EventsAdmin from "@/pages/admin/EventsAdmin";
+
+function AppRouter() {
+    const location = useLocation();
+    if (location.hash?.includes("session_id=")) {
+        return <AuthCallback />;
     }
-  };
+    return (
+        <Routes>
+            <Route path="/" element={<Landing />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/admin/login" element={<AdminLogin />} />
+            <Route path="/auth/callback" element={<AuthCallback />} />
 
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
+            <Route path="/dashboard" element={<ProtectedRoute><StudentDashboard /></ProtectedRoute>} />
+            <Route path="/feedback/cycle/:cycleId" element={<ProtectedRoute roles={["student"]}><FeedbackWizard /></ProtectedRoute>} />
+            <Route path="/events" element={<ProtectedRoute><Events /></ProtectedRoute>} />
+            <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
 
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
+            <Route path="/admin" element={<ProtectedRoute roles={["admin"]}><AdminShell /></ProtectedRoute>}>
+                <Route index element={<AdminHome />} />
+                <Route path="academic" element={<AcademicStructure />} />
+                <Route path="faculty" element={<FacultyAdmin />} />
+                <Route path="students" element={<StudentsAdmin />} />
+                <Route path="templates" element={<TemplatesAdmin />} />
+                <Route path="cycles" element={<CyclesAdmin />} />
+                <Route path="responses" element={<ResponsesAdmin />} />
+                <Route path="events" element={<EventsAdmin />} />
+                <Route path="analytics" element={<AdminHome />} />
+            </Route>
+
+            <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+    );
+}
 
 function App() {
-  return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </div>
-  );
+    return (
+        <div className="App">
+            <BrowserRouter>
+                <AuthProvider>
+                    <AppRouter />
+                    <Toaster position="top-center" richColors />
+                </AuthProvider>
+            </BrowserRouter>
+        </div>
+    );
 }
 
 export default App;

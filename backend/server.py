@@ -1,89 +1,1033 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Query
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import io
+import csv
 import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
 import uuid
-from datetime import datetime, timezone
-
+import bcrypt
+import secrets
+from pathlib import Path
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timezone, timedelta
+import httpx
+from openpyxl import Workbook
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+MONGO_URL = os.environ["MONGO_URL"]
+DB_NAME = os.environ["DB_NAME"]
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
 
-# Create the main app without a prefix
-app = FastAPI()
+ALLOWED_DOMAINS = {
+    d.strip().lower()
+    for d in os.environ.get("ALLOWED_EMAIL_DOMAINS", "").split(",")
+    if d.strip()
+}
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").lower()
+ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+app = FastAPI(title="KLECBA Feedback Portal")
+api = APIRouter(prefix="/api")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("klecba")
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+# ---------------- Helpers ----------------
+def utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
+def uid(prefix: str = "") -> str:
+    return f"{prefix}{uuid.uuid4().hex[:16]}" if prefix else uuid.uuid4().hex
+
+
+def domain_allowed(email: str) -> bool:
+    if not ALLOWED_DOMAINS:
+        return True  # Not configured -> allow (dev)
+    return email.lower().split("@")[-1] in ALLOWED_DOMAINS
+
+
+async def get_current_user(request: Request) -> Dict[str, Any]:
+    token = request.cookies.get("session_token")
+    if not token:
+        auth = request.headers.get("authorization") or request.headers.get("Authorization")
+        if auth and auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(401, "Not authenticated")
+    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if not session:
+        raise HTTPException(401, "Invalid session")
+    exp = session["expires_at"]
+    if isinstance(exp, str):
+        exp = datetime.fromisoformat(exp)
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
+        raise HTTPException(401, "Session expired")
+    user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(401, "User not found")
+    return user
+
+
+async def require_admin(request: Request):
+    user = await get_current_user(request)
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    return user
+
+
+async def require_role(request: Request, roles: List[str]):
+    user = await get_current_user(request)
+    if user.get("role") not in roles:
+        raise HTTPException(403, "Not allowed")
+    return user
+
+
+async def create_session_for(user_id: str, response: Response, remember_days: int = 7) -> str:
+    token = f"sess_{secrets.token_urlsafe(32)}"
+    expires = datetime.now(timezone.utc) + timedelta(days=remember_days)
+    await db.user_sessions.insert_one({
+        "user_id": user_id, "session_token": token,
+        "expires_at": expires.isoformat(), "created_at": utcnow_iso(),
+    })
+    response.set_cookie(
+        "session_token", token, path="/", httponly=True, secure=True,
+        samesite="none", max_age=remember_days * 24 * 3600,
+    )
+    return token
+
+
+# ---------------- Auth (Google + Admin password) ----------------
+@api.post("/auth/session")
+async def create_session(payload: Dict[str, str], response: Response):
+    """Emergent Google OAuth session exchange for STUDENT/FACULTY only."""
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(400, "session_id required")
+    async with httpx.AsyncClient(timeout=15.0) as hx:
+        r = await hx.get(
+            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+            headers={"X-Session-ID": session_id},
+        )
+    if r.status_code != 200:
+        raise HTTPException(401, "Invalid session_id")
+    data = r.json()
+    email = data["email"].lower()
+
+    # Enforce college domain restriction (backend)
+    if not domain_allowed(email):
+        raise HTTPException(403, f"Only college domain emails allowed. Contact administration.")
+
+    # Admin cannot sign in via Google
+    if email == ADMIN_EMAIL:
+        raise HTTPException(403, "Admin accounts must use the admin login.")
+
+    name = data.get("name") or email.split("@")[0]
+    picture = data.get("picture")
+    session_token = data["session_token"]
+
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+        # Role stays as previously assigned by admin; default 'student'
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"name": name, "picture": picture, "last_login": utcnow_iso()}},
+        )
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id, "email": email, "name": name, "picture": picture,
+            "role": "student", "created_at": utcnow_iso(),
+        })
+
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.user_sessions.insert_one({
+        "user_id": user_id, "session_token": session_token,
+        "expires_at": expires_at.isoformat(), "created_at": utcnow_iso(),
+    })
+    response.set_cookie(
+        "session_token", session_token, path="/", httponly=True, secure=True,
+        samesite="none", max_age=7 * 24 * 3600,
+    )
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    return {"user": user}
+
+
+@api.post("/auth/admin-login")
+async def admin_login(payload: Dict[str, str], response: Response):
+    email = (payload.get("email") or "").lower().strip()
+    password = payload.get("password") or ""
+    if not email or not password:
+        raise HTTPException(400, "email and password required")
+    if not ADMIN_EMAIL or not ADMIN_PASSWORD_HASH:
+        raise HTTPException(500, "Admin not configured")
+    if email != ADMIN_EMAIL:
+        raise HTTPException(401, "Invalid credentials")
+    if not bcrypt.checkpw(password.encode(), ADMIN_PASSWORD_HASH.encode()):
+        raise HTTPException(401, "Invalid credentials")
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one({"user_id": user_id}, {"$set": {"role": "admin", "last_login": utcnow_iso()}})
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id, "email": email, "name": "KLECBA Admin",
+            "role": "admin", "picture": None, "created_at": utcnow_iso(),
+        })
+    await create_session_for(user_id, response)
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    return {"user": user}
+
+
+@api.get("/auth/me")
+async def me(request: Request):
+    user = await get_current_user(request)
+    profile = None
+    if user.get("role") == "student":
+        profile = await db.student_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return {"user": user, "profile": profile}
+
+
+@api.post("/auth/logout")
+async def logout(request: Request, response: Response):
+    token = request.cookies.get("session_token")
+    if not token:
+        auth = request.headers.get("authorization") or request.headers.get("Authorization")
+        if auth and auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+    if token:
+        await db.user_sessions.delete_one({"session_token": token})
+    response.delete_cookie("session_token", path="/")
+    return {"ok": True}
+
+
+# ---------------- Academic Structure ----------------
+STRUCTURE_ENTITIES = {
+    "departments": ["name", "code"],
+    "programs": ["name", "code", "department_id"],
+    "academic_years": ["name"],  # e.g., 2025-2026
+    "year_levels": ["name", "order"],  # 1st Year, 2nd Year
+    "semesters": ["name", "order"],  # Semester 1
+    "divisions": ["name"],  # A, B, C
+    "subjects": ["name", "code"],
+}
+
+
+def struct_router(entity: str, fields: List[str]):
+    @api.get(f"/{entity}")
+    async def _list():
+        docs = await db[entity].find({}, {"_id": 0}).to_list(2000)
+        return docs
+
+    @api.post(f"/{entity}")
+    async def _create(payload: Dict[str, Any], request: Request):
+        await require_admin(request)
+        doc = {k: payload.get(k) for k in fields}
+        doc["id"] = uid()
+        doc["active"] = payload.get("active", True)
+        doc["created_at"] = utcnow_iso()
+        await db[entity].insert_one(doc)
+        doc.pop("_id", None)
+        return doc
+
+    @api.put(f"/{entity}/{{oid}}")
+    async def _update(oid: str, payload: Dict[str, Any], request: Request):
+        await require_admin(request)
+        existing = await db[entity].find_one({"id": oid}, {"_id": 0})
+        if not existing:
+            raise HTTPException(404, f"{entity} not found")
+        upd = {k: payload.get(k) for k in fields if k in payload}
+        if "active" in payload:
+            upd["active"] = payload["active"]
+        await db[entity].update_one({"id": oid}, {"$set": upd})
+        return await db[entity].find_one({"id": oid}, {"_id": 0})
+
+    @api.delete(f"/{entity}/{{oid}}")
+    async def _delete(oid: str, request: Request):
+        await require_admin(request)
+        existing = await db[entity].find_one({"id": oid}, {"_id": 0})
+        if not existing:
+            raise HTTPException(404, f"{entity} not found")
+        # Referential integrity: block delete if referenced
+        ref_map = {
+            "departments": [("programs", "department_id"), ("users", "department_id"),
+                             ("student_profiles", "department_id"), ("feedback_cycles", "department_id")],
+            "programs": [("faculty_assignments", "program_id"), ("student_profiles", "program_id"), ("feedback_cycles", "program_id")],
+            "subjects": [("faculty_assignments", "subject_id")],
+            "divisions": [("faculty_assignments", "division_id"), ("student_profiles", "division_id")],
+            "semesters": [("faculty_assignments", "semester_id"), ("student_profiles", "semester_id"), ("feedback_cycles", "semester_id")],
+            "year_levels": [("faculty_assignments", "year_level_id"), ("student_profiles", "year_level_id"), ("feedback_cycles", "year_level_id")],
+            "academic_years": [("faculty_assignments", "academic_year_id"), ("student_profiles", "academic_year_id"), ("feedback_cycles", "academic_year_id")],
+        }
+        for coll, key in ref_map.get(entity, []):
+            if await db[coll].count_documents({key: oid}):
+                raise HTTPException(400, f"Cannot delete: referenced by {coll}")
+        await db[entity].delete_one({"id": oid})
+        return {"ok": True}
+
+
+for _entity, _fields in STRUCTURE_ENTITIES.items():
+    struct_router(_entity, _fields)
+
+
+# ---------------- Faculty (users with role=faculty) ----------------
+@api.get("/faculty")
+async def list_faculty(request: Request):
+    await require_role(request, ["admin", "faculty"])
+    docs = await db.users.find({"role": "faculty"}, {"_id": 0, "session_token": 0}).to_list(2000)
+    return docs
+
+
+@api.post("/faculty")
+async def create_faculty(payload: Dict[str, Any], request: Request):
+    await require_admin(request)
+    email = (payload.get("email") or "").lower().strip()
+    if not email:
+        raise HTTPException(400, "email required")
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        await db.users.update_one({"email": email}, {"$set": {"role": "faculty", "name": payload.get("name") or existing.get("name"), "department_id": payload.get("department_id"), "active": True}})
+        return await db.users.find_one({"email": email}, {"_id": 0})
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "user_id": user_id, "email": email, "name": payload.get("name") or email.split("@")[0],
+        "role": "faculty", "department_id": payload.get("department_id"),
+        "active": True, "created_at": utcnow_iso(), "picture": None,
+    }
+    await db.users.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/faculty/{uid_}")
+async def update_faculty(uid_: str, payload: Dict[str, Any], request: Request):
+    await require_admin(request)
+    upd = {k: v for k, v in payload.items() if k in ("name", "department_id", "active")}
+    await db.users.update_one({"user_id": uid_, "role": "faculty"}, {"$set": upd})
+    return await db.users.find_one({"user_id": uid_}, {"_id": 0})
+
+
+# ---------------- Faculty Assignments ----------------
+class Assignment(BaseModel):
+    id: Optional[str] = None
+    faculty_id: str
+    subject_id: str
+    program_id: str
+    year_level_id: str
+    semester_id: str
+    division_id: str
+    academic_year_id: str
+    active: bool = True
+
+
+@api.get("/assignments")
+async def list_assignments(request: Request):
+    await require_role(request, ["admin", "faculty"])
+    docs = await db.faculty_assignments.find({}, {"_id": 0}).to_list(5000)
+    return docs
+
+
+@api.post("/assignments")
+async def create_assignment(payload: Assignment, request: Request):
+    await require_admin(request)
+    d = payload.model_dump()
+    scope_q = {k: d[k] for k in ("faculty_id", "subject_id", "program_id", "year_level_id", "semester_id", "division_id", "academic_year_id")}
+    if await db.faculty_assignments.find_one(scope_q):
+        raise HTTPException(409, "Assignment already exists for this scope")
+    d["id"] = uid()
+    d["created_at"] = utcnow_iso()
+    await db.faculty_assignments.insert_one(d)
+    d.pop("_id", None)
+    return d
+
+
+@api.put("/assignments/{aid}")
+async def update_assignment(aid: str, payload: Assignment, request: Request):
+    await require_admin(request)
+    d = payload.model_dump()
+    d.pop("id", None)
+    await db.faculty_assignments.update_one({"id": aid}, {"$set": d})
+    return await db.faculty_assignments.find_one({"id": aid}, {"_id": 0})
+
+
+@api.delete("/assignments/{aid}")
+async def delete_assignment(aid: str, request: Request):
+    await require_admin(request)
+    await db.faculty_assignments.delete_one({"id": aid})
+    return {"ok": True}
+
+
+# ---------------- Students ----------------
+@api.get("/students")
+async def list_students(request: Request):
+    await require_admin(request)
+    docs = await db.users.find({"role": "student"}, {"_id": 0}).to_list(5000)
+    # attach profile
+    profiles = {p["user_id"]: p for p in await db.student_profiles.find({}, {"_id": 0}).to_list(5000)}
+    for d in docs:
+        d["profile"] = profiles.get(d["user_id"])
+    return docs
+
+
+@api.post("/students/profile")
+async def upsert_student_profile(payload: Dict[str, Any], request: Request):
+    await require_admin(request)
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(400, "user_id required")
+    doc = {
+        "user_id": user_id,
+        "student_id": payload.get("student_id"),
+        "department_id": payload.get("department_id"),
+        "program_id": payload.get("program_id"),
+        "year_level_id": payload.get("year_level_id"),
+        "semester_id": payload.get("semester_id"),
+        "division_id": payload.get("division_id"),
+        "academic_year_id": payload.get("academic_year_id"),
+        "updated_at": utcnow_iso(),
+    }
+    await db.student_profiles.update_one({"user_id": user_id}, {"$set": doc}, upsert=True)
+    return await db.student_profiles.find_one({"user_id": user_id}, {"_id": 0})
+
+
+# ---------------- Feedback Templates & Versions ----------------
+@api.get("/templates")
+async def list_templates(request: Request):
+    await require_admin(request)
+    docs = await db.feedback_templates.find({}, {"_id": 0}).to_list(2000)
+    return docs
+
+
+@api.post("/templates")
+async def create_template(payload: Dict[str, Any], request: Request):
+    await require_admin(request)
+    doc = {
+        "id": uid(),
+        "name": payload.get("name") or "Untitled Template",
+        "description": payload.get("description") or "",
+        "category": payload.get("category") or "student",  # student|certification|faculty|academic
+        "iterates_faculty": bool(payload.get("iterates_faculty", payload.get("category") == "student")),
+        "rating_scale": int(payload.get("rating_scale") or 5),
+        "questions": payload.get("questions") or [],
+        "published_version_id": None,
+        "latest_version": 0,
+        "active": True,
+        "created_at": utcnow_iso(),
+        "updated_at": utcnow_iso(),
+    }
+    await db.feedback_templates.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/templates/{tid}")
+async def update_template(tid: str, payload: Dict[str, Any], request: Request):
+    await require_admin(request)
+    upd = {k: v for k, v in payload.items() if k in ("name", "description", "category", "iterates_faculty", "rating_scale", "questions", "active")}
+    upd["updated_at"] = utcnow_iso()
+    await db.feedback_templates.update_one({"id": tid}, {"$set": upd})
+    return await db.feedback_templates.find_one({"id": tid}, {"_id": 0})
+
+
+@api.post("/templates/{tid}/publish")
+async def publish_template(tid: str, request: Request):
+    """Create immutable version snapshot of current questions."""
+    await require_admin(request)
+    t = await db.feedback_templates.find_one({"id": tid}, {"_id": 0})
+    if not t:
+        raise HTTPException(404, "Template not found")
+    version_num = (t.get("latest_version") or 0) + 1
+    version_doc = {
+        "id": uid(),
+        "template_id": tid,
+        "version": version_num,
+        "name": t["name"],
+        "description": t["description"],
+        "category": t["category"],
+        "iterates_faculty": t["iterates_faculty"],
+        "rating_scale": t["rating_scale"],
+        "questions": t.get("questions") or [],
+        "published_at": utcnow_iso(),
+    }
+    await db.feedback_template_versions.insert_one(version_doc)
+    await db.feedback_templates.update_one(
+        {"id": tid},
+        {"$set": {"published_version_id": version_doc["id"], "latest_version": version_num}},
+    )
+    version_doc.pop("_id", None)
+    return version_doc
+
+
+@api.delete("/templates/{tid}")
+async def delete_template(tid: str, request: Request):
+    await require_admin(request)
+    used = await db.feedback_cycles.count_documents({"template_id": tid})
+    if used:
+        raise HTTPException(400, "Template is used by cycles. Deactivate instead.")
+    await db.feedback_templates.delete_one({"id": tid})
+    return {"ok": True}
+
+
+# ---------------- Feedback Cycles ----------------
+@api.get("/cycles")
+async def list_cycles(request: Request):
+    user = await get_current_user(request)
+    if user["role"] == "admin":
+        docs = await db.feedback_cycles.find({}, {"_id": 0}).to_list(2000)
+    else:
+        docs = await db.feedback_cycles.find({"status": {"$in": ["active", "closed"]}}, {"_id": 0}).to_list(2000)
+    return docs
+
+
+@api.post("/cycles")
+async def create_cycle(payload: Dict[str, Any], request: Request):
+    await require_admin(request)
+    t = await db.feedback_templates.find_one({"id": payload.get("template_id")}, {"_id": 0})
+    if not t:
+        raise HTTPException(400, "Template not found")
+    if not t.get("published_version_id"):
+        raise HTTPException(400, "Publish the template before creating a cycle")
+    doc = {
+        "id": uid(),
+        "name": payload.get("name") or "Untitled Cycle",
+        "template_id": t["id"],
+        "template_version_id": t["published_version_id"],
+        "academic_year_id": payload.get("academic_year_id"),
+        "department_id": payload.get("department_id"),
+        "program_id": payload.get("program_id"),
+        "year_level_id": payload.get("year_level_id"),
+        "semester_id": payload.get("semester_id"),
+        "division_ids": payload.get("division_ids") or [],  # list of divisions
+        "starts_at": payload.get("starts_at"),
+        "ends_at": payload.get("ends_at"),
+        "status": payload.get("status") or "draft",  # draft|scheduled|active|closed|archived
+        "created_at": utcnow_iso(),
+    }
+    await db.feedback_cycles.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/cycles/{cid}")
+async def update_cycle(cid: str, payload: Dict[str, Any], request: Request):
+    await require_admin(request)
+    upd = {k: v for k, v in payload.items() if k in ("name", "academic_year_id", "department_id", "program_id", "year_level_id", "semester_id", "division_ids", "starts_at", "ends_at", "status")}
+    await db.feedback_cycles.update_one({"id": cid}, {"$set": upd})
+    return await db.feedback_cycles.find_one({"id": cid}, {"_id": 0})
+
+
+@api.delete("/cycles/{cid}")
+async def delete_cycle(cid: str, request: Request):
+    await require_admin(request)
+    if await db.feedback_submissions.count_documents({"cycle_id": cid}):
+        raise HTTPException(400, "Cycle has submissions; archive instead")
+    await db.feedback_cycles.delete_one({"id": cid})
+    await db.feedback_drafts.delete_many({"cycle_id": cid})
+    return {"ok": True}
+
+
+# ---------------- Student Feedback Flow ----------------
+async def _resolve_student_cycles(user_id: str) -> List[Dict[str, Any]]:
+    prof = await db.student_profiles.find_one({"user_id": user_id}, {"_id": 0})
+    if not prof:
+        return []
+    now = utcnow_iso()
+    q: Dict[str, Any] = {
+        "status": "active",
+        "starts_at": {"$lte": now},
+        "ends_at": {"$gte": now},
+    }
+    # match scope: only compare if cycle sets that scope; empty means "any"
+    all_cycles = await db.feedback_cycles.find(q, {"_id": 0}).to_list(1000)
+    out = []
+    for c in all_cycles:
+        ok = True
+        for key in ("department_id", "program_id", "year_level_id", "semester_id", "academic_year_id"):
+            if c.get(key) and c.get(key) != prof.get(key):
+                ok = False
+                break
+        divs = c.get("division_ids") or []
+        if divs and prof.get("division_id") not in divs:
+            ok = False
+        if ok:
+            out.append(c)
+    return out
+
+
+@api.get("/my/cycles")
+async def my_cycles(request: Request):
+    user = await get_current_user(request)
+    if user["role"] != "student":
+        return []
+    cycles = await _resolve_student_cycles(user["user_id"])
+    # Attach submission/draft status
+    for c in cycles:
+        c["submitted"] = bool(await db.feedback_submissions.find_one({"user_id": user["user_id"], "cycle_id": c["id"]}))
+        c["has_draft"] = bool(await db.feedback_drafts.find_one({"user_id": user["user_id"], "cycle_id": c["id"]}))
+    return cycles
+
+
+@api.get("/my/cycles/{cid}/context")
+async def cycle_context(cid: str, request: Request):
+    """Full data needed to render the student's wizard: cycle, template version, faculty assignments, draft."""
+    user = await get_current_user(request)
+    if user["role"] != "student":
+        raise HTTPException(403, "Students only")
+    prof = await db.student_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not prof:
+        raise HTTPException(400, "No academic profile assigned")
+    cycle = await db.feedback_cycles.find_one({"id": cid}, {"_id": 0})
+    if not cycle:
+        raise HTTPException(404, "Cycle not found")
+    # Verify eligibility (compare by id)
+    eligible_ids = {c["id"] for c in await _resolve_student_cycles(user["user_id"])}
+    if cycle["id"] not in eligible_ids:
+        raise HTTPException(403, "Not eligible for this cycle")
+
+    submission = await db.feedback_submissions.find_one({"user_id": user["user_id"], "cycle_id": cid}, {"_id": 0})
+    tv = await db.feedback_template_versions.find_one({"id": cycle["template_version_id"]}, {"_id": 0})
+    if not tv:
+        raise HTTPException(500, "Template version missing")
+
+    faculty_items: List[Dict[str, Any]] = []
+    if tv.get("iterates_faculty"):
+        # Load assignments matching scope
+        aq: Dict[str, Any] = {"active": True}
+        for key in ("program_id", "year_level_id", "semester_id", "academic_year_id"):
+            if cycle.get(key):
+                aq[key] = cycle[key]
+            elif prof.get(key):
+                aq[key] = prof.get(key)
+        aq["division_id"] = prof["division_id"]
+        assignments = await db.faculty_assignments.find(aq, {"_id": 0}).to_list(500)
+        # decorate
+        subjects = {s["id"]: s for s in await db.subjects.find({}, {"_id": 0}).to_list(2000)}
+        faculty_map = {u["user_id"]: u for u in await db.users.find({"role": "faculty"}, {"_id": 0}).to_list(2000)}
+        for a in assignments:
+            f = faculty_map.get(a["faculty_id"])
+            if not f:
+                continue
+            faculty_items.append({
+                "assignment_id": a["id"],
+                "faculty_id": a["faculty_id"],
+                "faculty_name": f.get("name"),
+                "subject_id": a["subject_id"],
+                "subject_name": (subjects.get(a["subject_id"]) or {}).get("name"),
+            })
+
+    draft = await db.feedback_drafts.find_one({"user_id": user["user_id"], "cycle_id": cid}, {"_id": 0})
+    return {
+        "cycle": cycle,
+        "template_version": tv,
+        "faculty_items": faculty_items,
+        "profile": prof,
+        "draft": draft,
+        "submitted": bool(submission),
+    }
+
+
+@api.post("/my/cycles/{cid}/draft")
+async def save_draft(cid: str, payload: Dict[str, Any], request: Request):
+    user = await get_current_user(request)
+    if user["role"] != "student":
+        raise HTTPException(403, "Students only")
+    if await db.feedback_submissions.find_one({"user_id": user["user_id"], "cycle_id": cid}):
+        raise HTTPException(400, "Already submitted")
+    doc = {
+        "user_id": user["user_id"],
+        "cycle_id": cid,
+        "answers": payload.get("answers") or {},
+        "step": int(payload.get("step") or 0),
+        "updated_at": utcnow_iso(),
+    }
+    await db.feedback_drafts.update_one(
+        {"user_id": user["user_id"], "cycle_id": cid},
+        {"$set": doc}, upsert=True,
+    )
+    return {"ok": True}
+
+
+@api.post("/my/cycles/{cid}/submit")
+async def submit_cycle(cid: str, payload: Dict[str, Any], request: Request):
+    user = await get_current_user(request)
+    if user["role"] != "student":
+        raise HTTPException(403, "Students only")
+    if await db.feedback_submissions.find_one({"user_id": user["user_id"], "cycle_id": cid}):
+        raise HTTPException(400, "Already submitted")
+    cycle = await db.feedback_cycles.find_one({"id": cid}, {"_id": 0})
+    if not cycle:
+        raise HTTPException(404, "Cycle not found")
+    tv = await db.feedback_template_versions.find_one({"id": cycle["template_version_id"]}, {"_id": 0})
+    if not tv:
+        raise HTTPException(500, "Template version missing")
+    answers = payload.get("answers") or {}
+    faculty_items = payload.get("faculty_items") or []
+    q_by_id = {q["id"]: q for q in tv.get("questions") or []}
+    # Validate required answers server-side
+    def group_valid(group_key):
+        grp = answers.get(group_key) or {}
+        for q in tv.get("questions") or []:
+            if q.get("required"):
+                v = grp.get(q["id"])
+                if v is None or v == "":
+                    return False, q["label"]
+        return True, None
+    if tv.get("iterates_faculty"):
+        if not faculty_items:
+            raise HTTPException(400, "Missing faculty items")
+        for f in faculty_items:
+            ok, missing = group_valid(f.get("assignment_id"))
+            if not ok:
+                raise HTTPException(400, f"Missing required answer '{missing}' for {f.get('faculty_name')}")
+    else:
+        ok, missing = group_valid("general")
+        if not ok:
+            raise HTTPException(400, f"Missing required answer '{missing}'")
+    # Build immutable submission
+    submission = {
+        "id": uid(),
+        "user_id": user["user_id"],
+        "user_email": user["email"],
+        "cycle_id": cid,
+        "template_version_id": tv["id"],
+        "template_snapshot": tv,
+        "faculty_snapshot": faculty_items,
+        "answers": answers,
+        "submitted_at": utcnow_iso(),
+    }
+    # Compute avg for analytics
+    ratings = []
+    for k, v in _flatten_ratings(answers, q_by_id).items():
+        ratings.append(v)
+    submission["avg"] = round(sum(ratings) / len(ratings), 2) if ratings else 0
+    await db.feedback_submissions.insert_one(submission)
+    await db.feedback_drafts.delete_one({"user_id": user["user_id"], "cycle_id": cid})
+    return {"ok": True, "id": submission["id"], "avg": submission["avg"]}
+
+
+def _flatten_ratings(answers: Dict[str, Any], q_by_id: Dict[str, Any]) -> Dict[str, float]:
+    """Extract numeric rating values (int type questions) from nested answers."""
+    result: Dict[str, float] = {}
+
+    def visit(prefix: str, obj: Any):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k in q_by_id and q_by_id[k].get("type") == "rating":
+                    try:
+                        n = int(v)
+                        if 1 <= n <= 5:
+                            result[f"{prefix}{k}"] = n
+                    except Exception:
+                        pass
+                elif isinstance(v, (dict, list)):
+                    visit(f"{prefix}{k}.", v)
+        elif isinstance(obj, list):
+            for i, x in enumerate(obj):
+                visit(f"{prefix}{i}.", x)
+
+    visit("", answers)
+    return result
+
+
+# ---------------- Admin Responses & Analytics ----------------
+@api.get("/responses")
+async def responses(
+    request: Request,
+    cycle_id: Optional[str] = None,
+    department_id: Optional[str] = None,
+    program_id: Optional[str] = None,
+    year_level_id: Optional[str] = None,
+    semester_id: Optional[str] = None,
+    division_id: Optional[str] = None,
+    faculty_id: Optional[str] = None,
+    subject_id: Optional[str] = None,
+):
+    await require_admin(request)
+    q: Dict[str, Any] = {}
+    if cycle_id:
+        q["cycle_id"] = cycle_id
+    docs = await db.feedback_submissions.find(q, {"_id": 0}).sort("submitted_at", -1).to_list(5000)
+    # Optional filters against cycle/profile
+    if any([department_id, program_id, year_level_id, semester_id, division_id]):
+        cycles = {c["id"]: c for c in await db.feedback_cycles.find({}, {"_id": 0}).to_list(2000)}
+        profiles = {p["user_id"]: p for p in await db.student_profiles.find({}, {"_id": 0}).to_list(5000)}
+        def match(d):
+            c = cycles.get(d["cycle_id"], {})
+            p = profiles.get(d["user_id"], {})
+            for key, val in (("department_id", department_id), ("program_id", program_id), ("year_level_id", year_level_id), ("semester_id", semester_id), ("division_id", division_id)):
+                if val and (c.get(key) or p.get(key)) != val:
+                    return False
+            return True
+        docs = [d for d in docs if match(d)]
+    if faculty_id or subject_id:
+        def touches(d):
+            for f in d.get("faculty_snapshot") or []:
+                if faculty_id and f.get("faculty_id") == faculty_id:
+                    return True
+                if subject_id and f.get("subject_id") == subject_id:
+                    return True
+            return False
+        docs = [d for d in docs if touches(d)]
+    return docs
+
+
+@api.get("/analytics/summary")
+async def analytics_summary(request: Request):
+    await require_admin(request)
+    subs = await db.feedback_submissions.find({}, {"_id": 0}).to_list(10000)
+    users = await db.users.count_documents({})
+    students = await db.users.count_documents({"role": "student"})
+    faculty = await db.users.count_documents({"role": "faculty"})
+    cycles_active = await db.feedback_cycles.count_documents({"status": "active"})
+    total_resp = len(subs)
+    avg_all = round(sum(s.get("avg") or 0 for s in subs) / total_resp, 2) if total_resp else 0
+
+    # Faculty averages via faculty_snapshot answers — RESTRICT to rating-type questions
+    fac_map: Dict[str, List[float]] = {}
+    fac_names: Dict[str, str] = {}
+    dept_map: Dict[str, List[float]] = {}
+    cycles = {c["id"]: c for c in await db.feedback_cycles.find({}, {"_id": 0}).to_list(2000)}
+    for s in subs:
+        tsnap = s.get("template_snapshot") or {}
+        rating_qids = {q["id"] for q in (tsnap.get("questions") or []) if q.get("type") == "rating"}
+        for f in s.get("faculty_snapshot") or []:
+            fid = f["faculty_id"]
+            aid = f.get("assignment_id")
+            ans = (s.get("answers") or {}).get(aid) if aid else None
+            if isinstance(ans, dict):
+                nums = []
+                for qid, v in ans.items():
+                    if qid in rating_qids and isinstance(v, (int, str)) and str(v).isdigit() and 1 <= int(v) <= 5:
+                        nums.append(int(v))
+                if nums:
+                    avg = sum(nums) / len(nums)
+                    fac_map.setdefault(fid, []).append(avg)
+                    fac_names[fid] = f.get("faculty_name") or fid
+        c = cycles.get(s.get("cycle_id"), {})
+        if c.get("department_id"):
+            dept_map.setdefault(c["department_id"], []).append(s.get("avg") or 0)
+
+    faculty_ratings = sorted(
+        [{"faculty_id": fid, "faculty": fac_names.get(fid, fid), "avg": round(sum(v) / len(v), 2), "count": len(v)} for fid, v in fac_map.items()],
+        key=lambda x: -x["avg"],
+    )
+    depts = {d["id"]: d for d in await db.departments.find({}, {"_id": 0}).to_list(500)}
+    dept_ratings = [{"department": depts.get(k, {}).get("name", k), "avg": round(sum(v) / len(v), 2), "count": len(v)} for k, v in dept_map.items()]
+
+    trend_map: Dict[str, List[float]] = {}
+    for s in subs:
+        m = (s.get("submitted_at") or "")[:7]
+        if m:
+            trend_map.setdefault(m, []).append(s.get("avg") or 0)
+    trend = sorted(
+        [{"month": m, "avg": round(sum(v) / len(v), 2), "count": len(v)} for m, v in trend_map.items()],
+        key=lambda x: x["month"],
+    )
+
+    # Completion: submissions vs eligible students per active cycle
+    completion = 0
+    pending = 0
+    if cycles_active:
+        active_cycles = [c for c in cycles.values() if c.get("status") == "active"]
+        elig_total = 0
+        sub_total = 0
+        for c in active_cycles:
+            elig = await db.student_profiles.count_documents(_scope_query(c))
+            elig_total += elig
+            sub_total += await db.feedback_submissions.count_documents({"cycle_id": c["id"]})
+        completion = round((sub_total / elig_total) * 100, 1) if elig_total else 0
+        pending = max(0, elig_total - sub_total)
+
+    return {
+        "totals": {
+            "students": students, "faculty": faculty, "users": users,
+            "responses": total_resp, "avg_rating": avg_all,
+            "cycles_active": cycles_active, "completion": completion, "pending": pending,
+        },
+        "faculty_ratings": faculty_ratings,
+        "dept_ratings": dept_ratings,
+        "trend": trend,
+    }
+
+
+def _scope_query(cycle: Dict[str, Any]) -> Dict[str, Any]:
+    q: Dict[str, Any] = {}
+    for key in ("department_id", "program_id", "year_level_id", "semester_id", "academic_year_id"):
+        if cycle.get(key):
+            q[key] = cycle[key]
+    if cycle.get("division_ids"):
+        q["division_id"] = {"$in": cycle["division_ids"]}
+    return q
+
+
+@api.get("/export")
+async def export_data(request: Request, fmt: str = Query("csv"), cycle_id: Optional[str] = None, include_pii: bool = False):
+    await require_admin(request)
+    q: Dict[str, Any] = {"cycle_id": cycle_id} if cycle_id else {}
+    docs = await db.feedback_submissions.find(q, {"_id": 0}).sort("submitted_at", -1).to_list(10000)
+    rows = []
+    for d in docs:
+        base_avg = d.get("avg")
+        for f in d.get("faculty_snapshot") or [{}]:
+            aid = f.get("assignment_id")
+            ans = (d.get("answers") or {}).get(aid) or {}
+            row = {
+                "submitted_at": d.get("submitted_at"),
+                "cycle_id": d.get("cycle_id"),
+                "faculty": f.get("faculty_name") or "",
+                "subject": f.get("subject_name") or "",
+                "avg": base_avg,
+                "answers": "; ".join(f"{k}:{v}" for k, v in ans.items()) if isinstance(ans, dict) else str(ans),
+            }
+            if include_pii:
+                row["respondent_email"] = d.get("user_email") or ""
+            rows.append(row)
+    if not rows:
+        rows = [{"info": "no data"}]
+
+    if fmt == "xlsx":
+        wb = Workbook(); ws = wb.active; ws.title = "Responses"
+        ws.append(list(rows[0].keys()))
+        for r in rows:
+            ws.append(list(r.values()))
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                 headers={"Content-Disposition": "attachment; filename=klecba_responses.xlsx"})
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+    w.writeheader()
+    for r in rows: w.writerow(r)
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
+                              headers={"Content-Disposition": "attachment; filename=klecba_responses.csv"})
+
+
+# ---------------- Events (unchanged) ----------------
+class Event(BaseModel):
+    id: str = Field(default_factory=lambda: uid())
+    title: str
+    description: str = ""
+    venue: str = ""
+    speaker: str = ""
+    starts_at: str
+    ends_at: str
+    feedback_type: str = "academic"
+    active: bool = True
+
+
+class EventIn(BaseModel):
+    title: str
+    description: str = ""
+    venue: str = ""
+    speaker: str = ""
+    starts_at: str
+    ends_at: str
+    feedback_type: str = "academic"
+    active: bool = True
+
+
+@api.get("/events")
+async def list_events():
+    return await db.events.find({}, {"_id": 0}).sort("starts_at", 1).to_list(1000)
+
+
+@api.post("/events")
+async def create_event(payload: EventIn, request: Request):
+    await require_admin(request)
+    e = Event(**payload.model_dump()); await db.events.insert_one(e.model_dump()); return e
+
+
+@api.put("/events/{eid}")
+async def update_event(eid: str, payload: EventIn, request: Request):
+    await require_admin(request)
+    await db.events.update_one({"id": eid}, {"$set": payload.model_dump()})
+    return await db.events.find_one({"id": eid}, {"_id": 0})
+
+
+@api.delete("/events/{eid}")
+async def delete_event(eid: str, request: Request):
+    await require_admin(request)
+    await db.events.delete_one({"id": eid})
+    return {"ok": True}
+
+
+# ---------------- Seed (dev only, admin required) ----------------
+@api.post("/seed")
+async def seed(request: Request):
+    await require_admin(request)
+    # Academic structure
+    async def upsert_many(entity, items, key="name"):
+        for i in items:
+            if not await db[entity].find_one({key: i[key]}):
+                i.setdefault("id", uid())
+                i.setdefault("active", True)
+                i.setdefault("created_at", utcnow_iso())
+                await db[entity].insert_one(i)
+
+    await upsert_many("departments", [
+        {"name": "Business Administration", "code": "BBA"},
+        {"name": "Commerce", "code": "BCOM"},
+        {"name": "Computer Science", "code": "BCA"},
+    ])
+    depts = {d["name"]: d for d in await db.departments.find({}, {"_id": 0}).to_list(100)}
+    await upsert_many("programs", [
+        {"name": "BBA", "code": "BBA", "department_id": depts["Business Administration"]["id"]},
+        {"name": "B.Com", "code": "BCOM", "department_id": depts["Commerce"]["id"]},
+        {"name": "BCA", "code": "BCA", "department_id": depts["Computer Science"]["id"]},
+    ])
+    await upsert_many("academic_years", [{"name": "2025-2026"}, {"name": "2024-2025"}])
+    for i, n in enumerate(["1st Year", "2nd Year", "3rd Year"], start=1):
+        if not await db.year_levels.find_one({"name": n}):
+            await db.year_levels.insert_one({"id": uid(), "name": n, "order": i, "active": True, "created_at": utcnow_iso()})
+    for i, n in enumerate([f"Semester {j}" for j in range(1, 7)], start=1):
+        if not await db.semesters.find_one({"name": n}):
+            await db.semesters.insert_one({"id": uid(), "name": n, "order": i, "active": True, "created_at": utcnow_iso()})
+    await upsert_many("divisions", [{"name": "A"}, {"name": "B"}, {"name": "C"}])
+    await upsert_many("subjects", [
+        {"name": "Financial Management", "code": "BBA301"},
+        {"name": "Marketing Management", "code": "BBA302"},
+        {"name": "Business Law", "code": "BBA303"},
+        {"name": "Human Resource Management", "code": "BBA304"},
+        {"name": "Operations Research", "code": "BBA305"},
+        {"name": "Business Analytics", "code": "BBA306"},
+        {"name": "Entrepreneurship", "code": "BBA307"},
+    ])
+    # Ensure events seed for existing
+    if await db.events.count_documents({}) == 0:
+        now = datetime.now(timezone.utc)
+        await db.events.insert_many([
+            {"id": uid(), "title": "AI in Business — Guest Lecture", "description": "Applied AI in modern enterprises.", "venue": "Auditorium A", "speaker": "Dr. Arjun Rao", "starts_at": (now + timedelta(days=3)).isoformat(), "ends_at": (now + timedelta(days=3, hours=2)).isoformat(), "feedback_type": "academic", "active": True},
+            {"id": uid(), "title": "Design Thinking Workshop", "description": "Hands-on workshop.", "venue": "Innovation Lab", "speaker": "Prof. Ravi Deshpande", "starts_at": (now - timedelta(days=5)).isoformat(), "ends_at": (now - timedelta(days=5, hours=-3)).isoformat(), "feedback_type": "certification", "active": True},
+        ])
+    return {"ok": True}
+
+
+@api.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"app": "KLECBA Feedback Portal", "ok": True}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
-
-# Include the router in the main app
-app.include_router(api_router)
+app.include_router(api)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
+async def on_shutdown():
     client.close()
