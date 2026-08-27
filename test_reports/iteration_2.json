@@ -1,0 +1,36 @@
+{
+  "summary": "Narrow-scope verification of the TESTING PREVIEW ACCESS patch. Backend: added /app/backend/tests/test_dev_preview.py (14 tests) covering POST /api/auth/dev-preview for student/faculty/admin, invalid/missing role -> 400, cookie + /api/auth/me session validity, account reuse/stability, RBAC (admin -> /api/analytics/summary 200; faculty -> /api/faculty/me/insights 200 and analytics 403; student -> /api/my/cycles 200 and analytics 403), student auto student_profile, plus regressions (admin-login OK, bad password rejected, POST /api/seed OK, unauthenticated /auth/me 401). Full suite re-run: 63/63 passed. Frontend: /preview renders the three data-testid buttons; each click sets the session and lands on /admin (Academic Structure sidebar), /faculty ('FACULTY PORTAL' / 'Hello, Preview.'), /dashboard (academic profile card BBA / 1st Year / Semester 1 / Div A, no 'not assigned' banner). /login shows only 'Continue with Google' with zero preview mentions; /admin/login still has email+password+Sign in.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "/preview header",
+        "issues": [
+          "The 'INTERNAL PREVIEW · NOT LINKED FROM THE PUBLIC LOGIN' badge renders on the same line as the KLECBA logo and visually overlaps/collides with the 'Preview Console' sub-label. Cause: the logo <a> and the badge <div> are both inline-flex siblings, so the mb-10 on the anchor does not force a line break. Fix: make the anchor 'flex' (block-level) or wrap the badge in its own block container."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_dev_preview.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Cosmetic only: fix /preview header layout so the 'Internal preview' badge sits below the logo instead of overlapping 'Preview Console' (Preview.jsx lines 42-54)."
+  ],
+  "critical_code_review_comments": [
+    "/api/auth/dev-preview is an unauthenticated privilege-escalation endpoint that mints an admin session for anyone who knows the URL. It is functionally correct per the request, but it should be gated behind an env flag (e.g. ENABLE_DEV_PREVIEW) so it cannot be reached in production.",
+    "dev_preview accepts a raw Dict[str, str] payload instead of a Pydantic model; consider a typed request model with Literal['student','faculty','admin'] for automatic 422 validation.",
+    "Student auto-profile silently skips creation when academic entities are absent (no program/year/sem/div), which would leave the preview student on the 'no profile' banner. Acceptable post-seed, but a fallback/seed-trigger would make the preview deterministic."
+  ],
+  "updated_files": ["/app/backend/tests/test_dev_preview.py"],
+  "success_rate": { "backend": "100% (63/63)", "frontend": "100% of preview + regression flows; 1 cosmetic layout issue" },
+  "seed_data_creation": "POST /api/seed executed via admin session (idempotent). Preview accounts preview.student@ / preview.faculty@ / preview.admin@klecba.edu.in created with a PREVIEW-001 student_profile for the student.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "admin@klecba.edu.in / KlecbaAdmin@2026 (from /app/memory/test_credentials.md); preview roles need no credentials",
+  "context_for_next_testing_agent": "Preview patch is fully green. Backend regression suite lives in /app/backend/tests/ (backend_test.py + test_dev_preview.py, 63 tests, ~15s, uses conftest.py fixtures admin_client/seeded/test_credentials). Note /api/auth/me returns {user, profile} — not a flat user object. No /api/my/profile endpoint exists; read profile from /auth/me.",
+  "rca_of_the_issue": "No functional defect found. The only finding is a CSS flow issue on /preview: two sibling inline-flex elements share a line, causing the badge to overlap the logo sub-label."
+}

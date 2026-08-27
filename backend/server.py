@@ -212,6 +212,65 @@ async def logout(request: Request, response: Response):
     return {"ok": True}
 
 
+# ---------------- Preview/Demo Sessions (testing only) ----------------
+PREVIEW_ACCOUNTS = {
+    "student": {"email": "preview.student@klecba.edu.in", "name": "Preview Student"},
+    "faculty": {"email": "preview.faculty@klecba.edu.in", "name": "Preview Faculty"},
+    "admin":   {"email": "preview.admin@klecba.edu.in",   "name": "Preview Admin"},
+}
+
+
+@api.post("/auth/dev-preview")
+async def dev_preview(payload: Dict[str, str], response: Response):
+    """Create/reuse a demo account for the requested role and sign in.
+    Not linked from the public login page — intended for internal testing/demo only."""
+    role = (payload.get("role") or "").strip().lower()
+    if role not in PREVIEW_ACCOUNTS:
+        raise HTTPException(400, "role must be student|faculty|admin")
+    acct = PREVIEW_ACCOUNTS[role]
+    existing = await db.users.find_one({"email": acct["email"]}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"role": role, "name": acct["name"], "last_login": utcnow_iso()}},
+        )
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id, "email": acct["email"], "name": acct["name"],
+            "role": role, "picture": None, "created_at": utcnow_iso(),
+        })
+
+    # For student preview, auto-assign a profile so the dashboard is meaningful
+    if role == "student":
+        prof = await db.student_profiles.find_one({"user_id": user_id}, {"_id": 0})
+        if not prof:
+            program = await db.programs.find_one({}, {"_id": 0})
+            year = await db.year_levels.find_one({}, {"_id": 0}, sort=[("order", 1)])
+            sem = await db.semesters.find_one({}, {"_id": 0}, sort=[("order", 1)])
+            div = await db.divisions.find_one({}, {"_id": 0})
+            ay = await db.academic_years.find_one({}, {"_id": 0})
+            if program and year and sem and div:
+                await db.student_profiles.insert_one({
+                    "user_id": user_id,
+                    "student_id": "PREVIEW-001",
+                    "department_id": program.get("department_id"),
+                    "program_id": program["id"],
+                    "year_level_id": year["id"],
+                    "semester_id": sem["id"],
+                    "division_id": div["id"],
+                    "academic_year_id": ay["id"] if ay else None,
+                    "updated_at": utcnow_iso(),
+                })
+
+    await create_session_for(user_id, response)
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    return {"user": user}
+
+
+
+
 # ---------------- Academic Structure ----------------
 STRUCTURE_ENTITIES = {
     "departments": ["name", "code"],

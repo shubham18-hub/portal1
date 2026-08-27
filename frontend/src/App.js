@@ -8,6 +8,7 @@ import Landing from "@/pages/Landing";
 import Login from "@/pages/Login";
 import AdminLogin from "@/pages/AdminLogin";
 import AuthCallback from "@/pages/AuthCallback";
+import Preview from "@/pages/Preview";
 import StudentDashboard from "@/pages/StudentDashboard";
 import FeedbackWizard from "@/pages/FeedbackWizard";
 import Events from "@/pages/Events";
@@ -45,6 +46,7 @@ function AppRouter() {
         <Routes>            <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
             <Route path="/admin/login" element={<AdminLogin />} />
+            <Route path="/preview" element={<Preview />} />
             <Route path="/auth/callback" element={<AuthCallback />} />
 
             <Route path="/dashboard" element={<ProtectedRoute><RoleRedirect /></ProtectedRoute>} />
