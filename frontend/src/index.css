@@ -1,0 +1,256 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    --navy: #0a1128;
+    --navy-2: #131a2b;
+    --frost: #f8fafc;
+    --blue: #0055ff;
+    --blue-hover: #0044cc;
+}
+
+html,
+body,
+#root {
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    font-family:
+        "Manrope",
+        -apple-system,
+        BlinkMacSystemFont,
+        "Helvetica Neue",
+        sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background: var(--frost);
+    color: #0f172a;
+    font-feature-settings:
+        "cv02" 1,
+        "cv03" 1,
+        "cv04" 1;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.font-display {
+    font-family: "Outfit", "Manrope", sans-serif;
+    letter-spacing: -0.01em;
+}
+
+@layer base {
+    :root {
+        --background: 210 40% 98%;
+        --foreground: 222 47% 11%;
+        --card: 0 0% 100%;
+        --card-foreground: 222 47% 11%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 222 47% 11%;
+        --primary: 222 84% 20%;
+        --primary-foreground: 210 40% 98%;
+        --secondary: 210 40% 96%;
+        --secondary-foreground: 222 47% 11%;
+        --muted: 210 40% 96%;
+        --muted-foreground: 215 16% 47%;
+        --accent: 217 100% 50%;
+        --accent-foreground: 0 0% 100%;
+        --destructive: 0 84% 60%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 214 32% 91%;
+        --input: 214 32% 91%;
+        --ring: 217 100% 50%;
+        --radius: 0.9rem;
+        --chart-1: 217 100% 50%;
+        --chart-2: 262 83% 58%;
+        --chart-3: 173 58% 39%;
+        --chart-4: 43 74% 55%;
+        --chart-5: 340 82% 52%;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+    body {
+        @apply bg-background text-foreground;
+    }
+}
+
+/* Liquid Glass surface */
+.glass {
+    background: rgba(255, 255, 255, 0.6);
+    backdrop-filter: blur(24px) saturate(160%);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    box-shadow: 0 8px 32px rgba(10, 17, 40, 0.06);
+}
+
+.glass-dark {
+    background: rgba(19, 26, 43, 0.55);
+    backdrop-filter: blur(24px) saturate(160%);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+
+/* Subtle grid noise for premium depth */
+.noise::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.6'/></svg>");
+}
+
+/* Radial glow blob */
+.glow {
+    position: absolute;
+    filter: blur(80px);
+    opacity: 0.55;
+    pointer-events: none;
+    border-radius: 999px;
+}
+
+/* Buttons — pill */
+.btn-primary {
+    background: var(--blue);
+    color: white;
+    border-radius: 9999px;
+    padding: 0.75rem 1.4rem;
+    font-weight: 500;
+    transition:
+        transform 0.25s ease,
+        box-shadow 0.25s ease,
+        background-color 0.25s ease;
+}
+.btn-primary:hover {
+    background: var(--blue-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 10px 30px rgba(0, 85, 255, 0.35);
+}
+.btn-primary:active {
+    transform: translateY(0);
+    box-shadow: 0 4px 14px rgba(0, 85, 255, 0.35);
+}
+
+.btn-ghost {
+    background: rgba(15, 23, 42, 0.04);
+    color: #0f172a;
+    border-radius: 9999px;
+    padding: 0.65rem 1.2rem;
+    font-weight: 500;
+    transition:
+        background-color 0.25s ease,
+        transform 0.25s ease;
+}
+.btn-ghost:hover {
+    background: rgba(15, 23, 42, 0.08);
+    transform: translateY(-1px);
+}
+
+/* Card hover lift */
+.card-lift {
+    transition:
+        transform 0.35s ease,
+        box-shadow 0.35s ease,
+        border-color 0.35s ease;
+}
+.card-lift:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 22px 60px rgba(10, 17, 40, 0.09);
+}
+
+/* Star buttons */
+.star-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 46px;
+    height: 46px;
+    border-radius: 14px;
+    background: rgba(15, 23, 42, 0.04);
+    color: rgba(15, 23, 42, 0.35);
+    transition:
+        background-color 0.2s ease,
+        color 0.2s ease,
+        transform 0.15s ease;
+}
+.star-btn:hover {
+    background: rgba(0, 85, 255, 0.08);
+    color: #0055ff;
+    transform: translateY(-1px);
+}
+.star-btn.active {
+    background: rgba(0, 85, 255, 0.1);
+    color: #0055ff;
+}
+
+/* Scrollbar polish */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(15, 23, 42, 0.15);
+    border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(15, 23, 42, 0.3);
+}
+
+/* Focus */
+:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(0, 85, 255, 0.35);
+    border-radius: 12px;
+}
+
+/* Selection */
+::selection {
+    background: rgba(0, 85, 255, 0.2);
+}
+
+/* Page fade */
+.page-enter {
+    opacity: 0;
+    transform: translateY(6px);
+}
+.page-enter-active {
+    opacity: 1;
+    transform: translateY(0);
+    transition:
+        opacity 0.4s ease,
+        transform 0.4s ease;
+}
+
+/* Checkmark draw */
+@keyframes draw {
+    to {
+        stroke-dashoffset: 0;
+    }
+}
+.checkmark path {
+    stroke-dasharray: 60;
+    stroke-dashoffset: 60;
+    animation: draw 0.7s ease forwards;
+}
+
+/* Utility: pretty hr */
+.hr-soft {
+    height: 1px;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(15, 23, 42, 0.12),
+        transparent
+    );
+}

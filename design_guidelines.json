@@ -1,0 +1,137 @@
+{
+  "theme_strategy": "Dual Theme (Light/Dark toggle) - Emphasizing Apple's 'Liquid Glass' Aesthetic. Deep Navy/Charcoal for Dark, Pristine Frost White for Light.",
+  "colors": {
+    "core_colors": [
+      {
+        "name": "Deep Navy",
+        "value": "#0A1128",
+        "usage": "Primary background for Dark Mode, authoritative contrast for text in Light Mode."
+      },
+      {
+        "name": "Frost White",
+        "value": "#F8FAFC",
+        "usage": "Primary background for Light Mode, pristine and clean."
+      },
+      {
+        "name": "College Blue",
+        "value": "#0055FF",
+        "usage": "The single premium accent color. Used for CTAs, active states, and progress bars. Creates electric contrast against Navy."
+      }
+    ],
+    "liquid_glass_surfaces": {
+      "light_mode": {
+        "background": "bg-white/70",
+        "border": "border-white/40",
+        "shadow": "shadow-[0_8px_32px_rgba(0,0,0,0.04)]",
+        "blur": "backdrop-blur-2xl backdrop-saturate-150"
+      },
+      "dark_mode": {
+        "background": "bg-[#131A2B]/60",
+        "border": "border-white/10",
+        "shadow": "shadow-[0_8px_32px_rgba(0,0,0,0.2)]",
+        "blur": "backdrop-blur-2xl backdrop-saturate-150"
+      }
+    }
+  },
+  "typography": {
+    "fonts": {
+      "heading": "Outfit",
+      "body": "Manrope",
+      "install_command": "Use Google Fonts for Outfit and Manrope in index.html or import in css."
+    },
+    "hierarchy": {
+      "h1_hero": "text-5xl md:text-6xl+ font-medium tracking-tight text-slate-900 dark:text-white",
+      "h2_section": "text-3xl md:text-4xl font-medium tracking-tight",
+      "h3_card": "text-xl font-semibold",
+      "body": "text-base leading-relaxed text-slate-600 dark:text-slate-300",
+      "labels": "text-xs font-bold uppercase tracking-[0.2em] text-slate-500"
+    },
+    "rules": [
+      "Do NOT use Inter, Roboto, or Space Grotesk.",
+      "Headlines > 32px MUST use tracking-tight.",
+      "Never center-align dense text; use center alignment strictly for hero headers or standalone CTAs."
+    ]
+  },
+  "visual_enhancers": {
+    "glassmorphism": "The 'Apple Liquid Glass' effect is mandatory for the sticky navbar, floating modals, and dashboard metric cards. Must include backdrop-saturate-150 to make underlying colors pop.",
+    "textures": "Use subtle noise overlays (opacity 2-3%) on the deep navy backgrounds to remove digital flatness.",
+    "corners": "Rounded-2xl for primary cards, rounded-full for pills and primary buttons."
+  },
+  "component_styles": {
+    "buttons": {
+      "primary": "bg-[#0055FF] text-white rounded-full px-6 py-2.5 font-medium hover:bg-[#0044CC] transition-all duration-300 hover:shadow-[0_4px_20px_rgba(0,85,255,0.4)] hover:-translate-y-0.5",
+      "glass": "bg-white/10 dark:bg-black/10 backdrop-blur-md border border-white/20 text-slate-900 dark:text-white rounded-full hover:bg-white/20 transition-all duration-300"
+    },
+    "cards": "Use liquid_glass_surfaces classes. Do NOT use solid white or solid black for cards over complex backgrounds.",
+    "inputs": "bg-slate-50/50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 focus:ring-2 focus:ring-[#0055FF]/50 focus:border-[#0055FF] transition-all outline-none",
+    "modals": "Apply heavy glassmorphism (backdrop-blur-3xl). Include a 1px border. Animate entrance with Framer Motion (scale 0.95 -> 1, opacity 0 -> 1).",
+    "charts": "Use Recharts. Line and Bar charts must use the primary College Blue (#0055FF) with gradient fills under the line (opacity 0.2 to 0). Hide standard grid lines, use only faint horizontal dashed lines for ultra-minimalism."
+  },
+  "layouts": {
+    "general": "Mobile-first responsive. Use generous padding (p-6, p-8, p-12) to create luxurious breathing room.",
+    "dashboard": "Bento Grid style. High density for Admin Analytics. Base grid: grid-cols-1 md:grid-cols-3 lg:grid-cols-4. Gap: gap-6.",
+    "forms": "Max-width containers (max-w-2xl) centered on screen. Use a progress bar at the top of the card.",
+    "navbar": "Sticky at top, z-50. Must use Crystal Glassmorphism. If scrolled, add a subtle border-b."
+  },
+  "grids": {
+    "bento_admin": {
+      "summary_metric": "col-span-1 rounded-2xl p-6",
+      "main_chart": "col-span-1 lg:col-span-2 row-span-2 rounded-2xl p-6",
+      "list_feed": "col-span-1 row-span-2 rounded-2xl p-6"
+    }
+  },
+  "motion": {
+    "page_transitions": "Fade and slight slide up (Framer Motion: initial={{ opacity: 0, y: 10 }}, animate={{ opacity: 1, y: 0 }}, transition={{ duration: 0.4, ease: 'easeOut' }}).",
+    "hover_states": "Cards lift on hover: hover:-translate-y-1 hover:shadow-xl transition-all duration-300 ease-out.",
+    "micro_interactions": "Thank-you animations after feedback submission (use a checkmark drawing animation or Confetti). Use skeleton loaders for async data.",
+    "forms": "Smooth transition between form steps. No abrupt jumps."
+  },
+  "accessibility": {
+    "contrast": "Ensure text contrast on glass surfaces meets APCA/WCAG standards. Darken text on light glass, lighten text on dark glass.",
+    "focus": "All interactive elements must have a visible focus ring (focus:ring-2 focus:ring-blue-500 focus:outline-none).",
+    "testing": "All interactive and key informational elements MUST include a data-testid attribute (e.g., data-testid='login-btn')."
+  },
+  "media": {
+    "icons": "Use lucide-react. Stroke width 1.5 for a refined, premium feel.",
+    "illustrations": "Avoid generic vector art. Use high-quality photography with blue/dark overlays to match the aesthetic."
+  },
+  "3d_libraries": {
+    "recommendation": "Not strictly required for this portal unless adding a 3D campus model. Stick to Framer Motion for 2D Liquid Glass physics to maintain 60fps performance."
+  },
+  "image_urls": {
+    "hero_background": {
+      "url": "https://images.unsplash.com/photo-1614850523011-8f49ffc73908?auto=format&fit=crop&q=85&w=1920",
+      "description": "Dark blue abstract premium background. Perfect for the Landing Page hero section behind a glassmorphic login card."
+    },
+    "campus_architecture": {
+      "url": "https://images.pexels.com/photos/5147366/pexels-photo-5147366.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Premium modern college campus architecture. Great for the 'About' section or Event module placeholder."
+    },
+    "students_library": {
+      "url": "https://images.unsplash.com/photo-1696395050055-eb7a315bb1cb?auto=format&fit=crop&q=85&w=1920",
+      "description": "Students in a modern university library. Good for the Academic Feedback context."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Prioritize Shadcn UI but heavily customize the styles to match the 'liquid_glass_surfaces' defined above.",
+    "Replace generic default fonts with Outfit (Headings) and Manrope (Body).",
+    "For the Feedback Forms: Implement a stepped layout with a clean progress bar. Hide native radio buttons and use styled rating stars (1-5).",
+    "For the Admin Dashboard: Build a Bento grid layout using Recharts for analytics. Ensure charts are minimalistic (no grid noise).",
+    "For the Events Module: Create a clean list/card view with auto-unlock visual cues (e.g., a lock icon that transitions to an 'Open Form' button).",
+    "Role-based routing is critical: Implement mock auth that clearly routes to Student, Faculty, or Admin dashboards based on role selection.",
+    "NEVER use transparent dropdown menus; they must have a solid or heavily blurred frosted background."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "You tend to converge toward generic outputs. Avoid this: make creative, distinctive frontends that surprise and delight.",
+    "Create depth through layered design elements with z-index hierarchy and glassmorphism (12-24px blur).",
+    "You MUST NOT apply universal transition (e.g., transition: all). Add transitions for specific properties excluding transforms.",
+    "You MUST NOT center align the app container (.App { text-align: center; }). It disrupts reading flow.",
+    "Always use modern button styles like pill-shaped with interaction animations.",
+    "NEVER use AI assistant Emoji characters (🤖🧠💭💡) for icons. Use lucide-react.",
+    "Every interaction needs micro-animations - hover states, transitions. Use Framer Motion extensively.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Use sonner for toasts.",
+    "Prioritize using pre-existing components from src/components/ui.",
+    "All interactive elements MUST include a data-testid attribute."
+  ]
+}

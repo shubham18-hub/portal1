@@ -1,0 +1,36 @@
+services:
+  # Backend Web Service
+  - type: web
+    name: klecba-backend
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.backend
+    dockerContext: .
+    envVars:
+      - key: MONGO_URL
+        sync: false
+      - key: DB_NAME
+        value: klecba_feedback
+      - key: CORS_ORIGINS
+        value: https://klecba-frontend.onrender.com
+      - key: ALLOWED_EMAIL_DOMAINS
+        value: klecba.edu.in,kle.ac.in,klecba.edu
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD_HASH
+        sync: false
+    healthCheckPath: /api/health
+
+  # Frontend Web Service
+  - type: web
+    name: klecba-frontend
+    env: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/build
+    pullRequestPreviewsEnabled: true
+    envVars:
+      - key: REACT_APP_BACKEND_URL
+        value: https://klecba-backend.onrender.com
+      - key: REACT_APP_GOOGLE_CLIENT_ID
+        sync: false
+

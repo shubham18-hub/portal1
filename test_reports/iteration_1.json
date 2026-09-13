@@ -1,0 +1,66 @@
+{
+  "summary": "Full backend + frontend E2E test of KLECBA Feedback Portal Phase 2. Created pytest suite (49 tests, 49 passed, 100%) covering admin password auth, session/cookie handling, seed, CRUD for all 7 academic entities, RBAC (anon 401 / student 403), faculty + assignments, student profiles, template lifecycle + versioning, cycle guards, complete student flow (resolve cycle -> context -> draft -> submit -> duplicate reject), responses filters, analytics summary and CSV/XLSX export. Frontend: verified /login shows ONLY 'Continue with Google' (0 inputs), /admin/login success + wrong-password error, all 9 sidebar sections navigate cleanly, admin created all 7 academic entities + faculty + assignment + student profile + template (rating+text question, reorder, save, preview, publish v1) + active cycle via UI, Responses page + CSV/Excel downloads, and the full student wizard (no-profile banner, cycle card, required-field validation, autosave 'Saved', Back preserves answers, Review step, Submit -> Thank you, already-submitted guard) with the submission reflected in admin Responses (1) and Analytics (avg 4.5, 2 faculty bars, trend point).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/assignments", "issue": "No uniqueness constraint on (faculty_id, subject_id, program_id, year_level_id, semester_id, division_id, academic_year_id). Reproduced: posting the same tuple twice creates two rows, and the student wizard then renders the SAME faculty+subject as two separate steps ('Faculty 1 / 3' and 'Faculty 3 / 3' both = UITest Prof One / Financial Management), inflating step count and double-counting that faculty in analytics."},
+      {"endpoint": "POST /api/my/cycles/{cid}/submit", "issue": "Required-answer validation is not enforced server-side. The code builds q_by_id under a '# Validate required' comment but never checks it, so an incomplete submission is accepted (only the client blocks per-step)."},
+      {"endpoint": "PUT/DELETE /api/{departments|programs|subjects|divisions|semesters|year_levels|academic_years}/{id}", "issue": "Unknown id returns 200 (PUT returns null body, DELETE returns {ok:true}) instead of 404."},
+      {"endpoint": "DELETE /api/{structure entity}/{id}", "issue": "No referential-integrity check: deleting a department/program/subject/division that is referenced by programs, faculty_assignments, student_profiles or feedback_cycles silently orphans those records."},
+      {"endpoint": "GET /api/analytics/summary", "issue": "Faculty rating aggregation counts any answer whose string form isDigit and is 1-5, including LONG TEXT answers. A text reply of '4' is scored as a rating, skewing faculty_ratings. Filter by the question type from template_snapshot instead."},
+      {"endpoint": "GET /api/export", "issue": "CSV/XLSX include user_email of the responding student, de-anonymising feedback. Confirm this is intentional for a faculty feedback portal."},
+      {"endpoint": "GET /api/responses", "issue": "faculty_id and subject_id filters are OR-ed inside one predicate, so passing both returns rows matching either filter rather than both."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "FeedbackWizard (submit)", "issue": "submit() has a '// Final validation for all groups' comment but performs no validation. Review step can show a group as 'Incomplete' while 'Submit feedback' stays enabled, allowing an incomplete submission (a student can reach Review through a restored draft step or the Edit links).", "selector": "[data-testid=\"wizard-submit-btn\"]", "priority": "MEDIUM"},
+      {"component": "StudentsAdmin table", "issue": "Student ID captured in the profile modal (stu-id-input) is never displayed in the students table, so admins cannot verify the roll number they saved.", "selector": "[data-testid^=\"student-row-\"]", "priority": "LOW"},
+      {"component": "AcademicStructure / TemplatesAdmin / CyclesAdmin delete", "issue": "Deletes use native window.confirm() instead of a styled confirmation dialog, inconsistent with the rest of the design system.", "selector": "[data-testid^=\"del-\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin dashboard / Analytics", "issues": ["'Department mix - Response share' donut renders with no legend, labels or percentages - unreadable single blue ring.", "With zero responses all three charts render as bare empty axes with no empty-state message.", "Recharts logs 'The width(-1) and height(-1) of chart should be greater than 0' repeatedly on first paint - ResponsiveContainer parent has no min height.", "Faculty-ratings X axis labels are rotated and clipped at the card edge."]},
+      {"screen": "Admin > Feedback cycles editor", "issues": ["Uses native <input type=datetime-local> browser pickers for starts_at/ends_at rather than the shadcn calendar component used elsewhere."]},
+      {"screen": "All admin pages (preview build)", "issues": ["React console error: 'In HTML, <span> cannot be a child of <option>' triggered by dynamic text inside <option> in AcademicStructure - noisy hydration warning."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/ui_seed.py",
+    "/app/backend/tests/ui_fixup.py",
+    "/app/backend/tests/ui_cleanup.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Reject duplicate faculty_assignments (unique index / 409 on the full scope tuple) - it currently duplicates wizard steps for students.",
+    "Enforce required-question validation in POST /api/my/cycles/{cid}/submit and disable the wizard Submit button until every review group is Complete.",
+    "Return 404 from structure PUT/DELETE when the id does not exist, and block deletes that are still referenced.",
+    "Restrict analytics rating aggregation to questions whose template_snapshot type == 'rating' (text answers like '4' are currently scored).",
+    "Decide whether student user_email should be included in /api/export (anonymity of feedback).",
+    "Add empty states, labels/legend and a min-height to the admin dashboard charts; fix the recharts width/height(-1) warning.",
+    "Show Student ID in the StudentsAdmin table."
+  ],
+  "critical_code_review_comments": [
+    "/app/backend/server.py is 986 lines - split into routers (auth, structure, people, templates, cycles, student_flow, analytics) as required by the <700-line rule.",
+    "struct_router() registers seven identically named nested handlers (_list/_create/_update/_delete) in a loop; FastAPI operation ids collide and OpenAPI docs are ambiguous. Build one parametrised router with an entity path param or give unique function names.",
+    "cycle_context() checks eligibility with `cycle in await _resolve_student_cycles(user_id)` - full dict equality against a re-fetched list. Compare cycle ids instead; any projection/field change silently breaks eligibility with a 403.",
+    "Structure POST/PUT accept arbitrary Dict[str, Any] with no Pydantic model, so name/code can be null or wrong-typed (e.g. POST /api/departments {} creates a record with name:null). Add request models.",
+    "_resolve_student_cycles compares ISO strings for starts_at/ends_at against utcnow_iso(); this only works while every cycle stores a UTC ISO string with the same offset format. Store real datetimes or normalise before comparing."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/ui_seed.py",
+    "/app/backend/tests/ui_fixup.py",
+    "/app/backend/tests/ui_cleanup.py"
+  ],
+  "success_rate": {"backend": "100% (49/49 pytest)", "frontend": "97% (all flows pass; 1 code-level submit-validation gap)"},
+  "seed_data_creation": "POST /api/seed used for academic structure. Temporary UI scenario (2 faculty + 2 assignments + published template + active cycle + student/no-profile users with Mongo sessions) was created by /app/backend/tests/ui_seed.py and fully removed afterwards by /app/backend/tests/ui_cleanup.py (verified: cycles=0, templates=0, submissions=0, assignments=0). Only the 10 pre-existing users remain. pytest suite self-cleans all TEST_ data.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "Admin: admin@klecba.edu.in / KlecbaAdmin@2026 (POST /api/auth/admin-login, cookie session_token). Student/faculty: create users + user_sessions in Mongo db test_database (see /app/backend/tests/conftest.py student_session fixture and ui_seed.py).",
+  "context_for_next_testing_agent": "Run `cd /app/backend && python -m pytest tests/ -q` - 49 tests, self-seeding and self-cleaning, ~14s. conftest.py exposes API, mongosh(), admin_client, seeded and student_session fixtures. For UI runs: `python /app/backend/tests/ui_seed.py` prints student_token / noprofile_token / cycle_id; inject as a cookie via page.context.add_cookies(name='session_token', httpOnly=True, secure=True, sameSite='None'); afterwards run ui_cleanup.py. Careful: selector `select[data-testid^=\"cycle-\"]` also matches the per-row cycle-status-<id> selects and will mutate existing cycles - exclude them. Same for `[data-testid^=\"assign-\"]` which matches assign-row-<id>. Not yet covered: Google OAuth happy path (external), Events admin CRUD, Profile page, mobile/tablet viewports, faculty-role dashboards.",
+  "rca_of_the_issue": "Duplicate assignments: create_assignment() inserts the payload with a fresh uuid and no pre-existence check or Mongo unique index, so the same faculty x subject x program x year x semester x division x academic_year tuple can be stored repeatedly. cycle_context() then builds faculty_items straight from that collection, so each duplicate becomes an extra wizard step for the same teacher and an extra sample in analytics. Reproduction: POST /api/assignments twice with an identical body, then GET /api/my/cycles/{id}/context as an eligible student - faculty_items contains the pair twice. Mitigation: unique compound index on the scope tuple plus a 409 response in the endpoint."
+}
