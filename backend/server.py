@@ -1599,6 +1599,7 @@ app.add_middleware(
 )
 
 
+<<<<<<< HEAD
 # Health check endpoint for Render and load balancers
 @app.get("/api/health")
 async def health_check():
@@ -1612,6 +1613,8 @@ async def health_check():
         return {"status": "unhealthy", "error": str(e)}
 
 
+=======
+>>>>>>> c9880b9fe7288449fa8aac16a9aa712f398a7cb0
 @app.on_event("shutdown")
 async def on_shutdown():
     client.close()
