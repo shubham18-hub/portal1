@@ -1,41 +1,55 @@
 import React, { useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
-import api from "@/lib/api";
-import { useAuth } from "@/context/AuthContext";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2 } from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
 
-// REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
 const AuthCallback = () => {
     const nav = useNavigate();
+    const [params] = useSearchParams();
     const { setUser, setProfile } = useAuth();
     const hasProcessed = useRef(false);
 
     useEffect(() => {
         if (hasProcessed.current) return;
         hasProcessed.current = true;
+
+        const code = params.get("code");
+        const state = params.get("state");
+        const error = params.get("error");
+
+        console.log("AuthCallback: code=", code, "state=", state, "error=", error);
+        console.log("Full URL:", window.location.href);
+
+        // Handle OAuth errors
+        if (error) {
+            const errorDesc = params.get("error_description") || error;
+            console.error("OAuth error:", errorDesc);
+            nav(`/login?error=${encodeURIComponent(errorDesc)}`, { replace: true });
+            return;
+        }
+
+        // Legacy Emergent auth flow (session_id in hash)
         const hash = window.location.hash || "";
-        const m = hash.match(/session_id=([^&]+)/);
-        if (!m) { nav("/login", { replace: true }); return; }
-        const session_id = decodeURIComponent(m[1]);
-        (async () => {
-            try {
-                const res = await api.post("/auth/session", { session_id });
-                setUser(res.data.user);
-                try {
-                    const me = await api.get("/auth/me");
-                    setProfile(me.data.profile || null);
-                } catch { /* noop */ }
-                window.history.replaceState(null, "", window.location.pathname);
-                const role = res.data.user.role;
-                const dest = role === "admin" ? "/admin" : role === "faculty" ? "/faculty" : "/dashboard";
-                nav(dest, { replace: true, state: { user: res.data.user } });
-            } catch (err) {
-                const detail = err?.response?.data?.detail || "";
-                const kind = detail.toLowerCase().includes("domain") ? "domain" : "1";
-                nav(`/login?error=${kind}`, { replace: true });
-            }
-        })();
-    }, [nav, setUser, setProfile]);
+        const legacyMatch = hash.match(/session_id=([^&]+)/);
+        if (legacyMatch && !code) {
+            console.log("Legacy Emergent flow detected");
+            nav(`/login?error=deprecated`, { replace: true });
+            return;
+        }
+
+        // New Google OAuth flow - redirect to backend callback
+        if (code && state) {
+            console.log("Google OAuth flow: redirecting to backend callback");
+            const backendUrl = process.env.REACT_APP_BACKEND_URL;
+            const callbackUrl = `${backendUrl}/api/auth/google/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
+            console.log("Callback URL:", callbackUrl);
+            window.location.href = callbackUrl;
+            return;
+        }
+
+        console.warn("No valid OAuth parameters found, redirecting to login");
+        nav("/login", { replace: true });
+    }, [nav, params, setUser, setProfile]);
 
     return (
         <div className="min-h-screen grid place-items-center bg-[#0A1128] text-white">
