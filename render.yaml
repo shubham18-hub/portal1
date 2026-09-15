@@ -25,7 +25,7 @@ services:
   - type: web
     name: klecba-frontend
     env: static
-    buildCommand: cd frontend && npm install && npm run build
+    buildCommand: cd frontend && yarn install && yarn build
     staticPublishPath: frontend/build
     pullRequestPreviewsEnabled: true
     envVars:
