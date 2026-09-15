@@ -27,13 +27,13 @@ services:
         value: https://klecba-frontend.onrender.com
     healthCheckPath: /api/health
 
-  # Frontend Web Service
+  # Frontend Web Service (Docker)
   - type: web
     name: klecba-frontend
-    env: node
+    env: docker
     plan: free
-    buildCommand: cd frontend && yarn install && yarn build
-    startCommand: cd frontend && node server.js
+    dockerfilePath: ./Dockerfile.frontend
+    dockerContext: .
     pullRequestPreviewsEnabled: true
     envVars:
       - key: REACT_APP_BACKEND_URL
