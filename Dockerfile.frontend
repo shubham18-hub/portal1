@@ -7,7 +7,7 @@ WORKDIR /app
 COPY frontend/ .
 
 # Install dependencies
-RUN yarn install --frozen-lockfile
+RUN yarn install
 
 # Build
 RUN yarn build
