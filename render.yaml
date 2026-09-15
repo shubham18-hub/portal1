@@ -32,7 +32,7 @@ services:
     name: klecba-frontend
     env: docker
     plan: free
-    dockerfilePath: ./frontend/Dockerfile
+    dockerfilePath: Dockerfile.frontend
     dockerContext: .
     pullRequestPreviewsEnabled: true
     envVars:
