@@ -33,7 +33,7 @@ services:
     env: node
     plan: free
     buildCommand: cd frontend && yarn install && yarn build
-    startCommand: cd frontend && npx serve -s build -l 3000
+    startCommand: cd frontend && npx serve -s build -l 3000 --single
     pullRequestPreviewsEnabled: true
     envVars:
       - key: REACT_APP_BACKEND_URL
