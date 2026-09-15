@@ -19,14 +19,21 @@ services:
         sync: false
       - key: ADMIN_PASSWORD_HASH
         sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        value: https://klecba-frontend.onrender.com
     healthCheckPath: /api/health
 
   # Frontend Web Service
   - type: web
     name: klecba-frontend
-    env: static
+    env: node
+    plan: free
     buildCommand: cd frontend && yarn install && yarn build
-    staticPublishPath: frontend/build
+    startCommand: yarn global add serve && serve -s frontend/build -l 3000
     pullRequestPreviewsEnabled: true
     envVars:
       - key: REACT_APP_BACKEND_URL
