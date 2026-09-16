@@ -16,13 +16,15 @@ The fastest way to deploy is using the included `render.yaml` blueprint:
 - `MONGO_URL` - MongoDB connection string
 - `ADMIN_EMAIL` - Admin email address
 - `ADMIN_PASSWORD_HASH` - Bcrypt hash of admin password (generate using script below)
-- `REACT_APP_GOOGLE_CLIENT_ID` - Google OAuth client ID
+- `GOOGLE_CLIENT_ID` - Google OAuth client ID
+- `GOOGLE_CLIENT_SECRET` - Google OAuth client secret
+- `FRONTEND_URL` - Your frontend URL (e.g., https://klecba-frontend.onrender.com)
 
 ## Prerequisites
 
 1. A [Render](https://render.com) account
 2. A MongoDB database (Render offers free MongoDB, or use MongoDB Atlas)
-3. Google OAuth credentials configured
+3. Google OAuth credentials configured (see Google OAuth Setup section below)
 
 ## Architecture
 
@@ -94,7 +96,7 @@ git push origin main
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `REACT_APP_BACKEND_URL` | Backend URL | `https://klecba-backend.onrender.com` |
-| `REACT_APP_GOOGLE_CLIENT_ID` | Google OAuth Client ID | `your-client-id.apps.googleusercontent.com` |
+| `768641231680-99l5v2ie3s749qudcb6fq073vdjikiej.apps.googleusercontent.com` | Google OAuth Client ID | `your-client-id.apps.googleusercontent.com` |
 
 5. Click **Deploy**
 
@@ -102,10 +104,18 @@ git push origin main
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com)
 2. Navigate to **APIs & Services** → **Credentials**
-3. Add authorized JavaScript origins:
+3. Create an OAuth 2.0 Client ID (if you don't have one)
+4. Add authorized JavaScript origins:
    - `https://klecba-frontend.onrender.com`
-4. Add authorized redirect URIs:
-   - `https://klecba-frontend.onrender.com/auth/callback`
+   - `http://localhost:3000` (for local development)
+5. Add authorized redirect URIs:
+   - `https://klecba-backend.onrender.com/api/auth/google/callback`
+   - `http://localhost:8000/api/auth/google/callback` (for local development)
+6. Copy the **Client ID** and **Client Secret**
+
+**Important**: Set these environment variables in Render:
+- Backend: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `FRONTEND_URL`
+- Frontend: `REACT_APP_BACKEND_URL`
 
 ### 6. Generate Admin Password Hash
 
@@ -151,13 +161,84 @@ Render supports Blueprint deployments via `render.yaml`:
 | `ALLOWED_EMAIL_DOMAINS` | No | Comma-separated email domains |
 | `ADMIN_EMAIL` | Yes | Admin user email |
 | `ADMIN_PASSWORD_HASH` | Yes | Bcrypt hash of admin password |
+| `GOOGLE_CLIENT_ID` | Yes | Google OAuth Client ID |
+| `GOOGLE_CLIENT_SECRET` | Yes | Google OAuth Client Secret |
+| `FRONTEND_URL` | Yes | Frontend URL for OAuth callbacks |
 
 ### Frontend
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `REACT_APP_BACKEND_URL` | Yes | Backend API URL |
-| `REACT_APP_GOOGLE_CLIENT_ID` | No | Google OAuth Client ID |
+| `REACT_APP_GOOGLE_CLIENT_ID` | No | Google OAuth Client ID (optional, for reference) |
+
+## Google OAuth Setup
+
+### Step 1: Create Google Cloud Project
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com)
+2. Create a new project or select existing one
+3. Enable the Google+ API (if not already enabled)
+
+### Step 2: Configure OAuth Consent Screen
+
+1. Navigate to **APIs & Services** → **OAuth consent screen**
+2. Choose **External** user type
+3. Fill in required fields:
+   - App name: `KLECBA Feedback Portal`
+   - Support email: Your email
+   - Developer contact: Your email
+4. Add scopes:
+   - `openid`
+   - `email`
+   - `profile`
+5. Add test users (if in testing mode)
+6. Publish the app (for production)
+
+### Step 3: Create OAuth 2.0 Credentials
+
+1. Navigate to **APIs & Services** → **Credentials**
+2. Click **Create Credentials** → **OAuth client ID**
+3. Application type: **Web application**
+4. Add authorized JavaScript origins:
+   - Production: `https://klecba-frontend.onrender.com`
+   - Local development: `http://localhost:3000`
+5. Add authorized redirect URIs:
+   - Production: `https://klecba-backend.onrender.com/api/auth/google/callback`
+   - Local development: `http://localhost:8000/api/auth/google/callback`
+6. Click **Create**
+7. Copy the **Client ID** and **Client Secret**
+
+### Step 4: Configure Environment Variables
+
+**In Render Dashboard (Backend):**
+```
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+FRONTEND_URL=https://klecba-frontend.onrender.com
+```
+
+**In Render Dashboard (Frontend):**
+```
+REACT_APP_BACKEND_URL=https://klecba-backend.onrender.com
+```
+
+### Step 5: Verify OAuth Configuration
+
+Test the OAuth configuration by visiting:
+```
+https://klecba-backend.onrender.com/api/auth/google/status
+```
+
+You should see:
+```json
+{
+  "configured": true,
+  "client_id_set": true,
+  "client_secret_set": true,
+  "frontend_url": "https://klecba-frontend.onrender.com"
+}
+```
 
 ## Troubleshooting
 
@@ -175,9 +256,16 @@ Render supports Blueprint deployments via `render.yaml`:
 
 ### Google OAuth Not Working
 
-- Verify redirect URIs in Google Cloud Console
-- Check that the Client ID matches between Google and your config
-- Ensure your domain is authorized
+- Verify redirect URIs in Google Cloud Console match exactly:
+  - Must include `/api/auth/google/callback` suffix
+  - No trailing slashes
+  - Both frontend and backend URLs must be in JavaScript origins
+- Check that `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set in backend
+- Verify `FRONTEND_URL` is set correctly in backend
+- Check backend logs for OAuth errors
+- Test configuration: `GET /api/auth/google/status`
+- Ensure OAuth consent screen is published (or you're a test user)
+- Check that requested scopes (`email`, `profile`) are authorized
 
 ### Frontend Shows 404 on Refresh
 

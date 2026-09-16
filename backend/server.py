@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -10,12 +10,16 @@ import logging
 import uuid
 import bcrypt
 import secrets
+import hashlib
+import base64
+import json
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 import httpx
 from openpyxl import Workbook
+from urllib.parse import urlencode, urlparse, parse_qs
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -32,6 +36,14 @@ ALLOWED_DOMAINS = {
 }
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").lower()
 ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
+
+# Google OAuth Configuration
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+
+# OAuth state store (in production, use Redis or similar)
+oauth_states: Dict[str, float] = {}
 
 app = FastAPI(title="KLECBA Feedback Portal")
 api = APIRouter(prefix="/api")
@@ -107,60 +119,61 @@ async def create_session_for(user_id: str, response: Response, remember_days: in
 
 
 # ---------------- Auth (Google + Admin password) ----------------
-@api.post("/auth/session")
-async def create_session(payload: Dict[str, str], response: Response):
-    """Emergent Google OAuth session exchange for STUDENT/FACULTY only."""
-    session_id = payload.get("session_id")
-    if not session_id:
-        raise HTTPException(400, "session_id required")
-    async with httpx.AsyncClient(timeout=15.0) as hx:
-        r = await hx.get(
-            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-            headers={"X-Session-ID": session_id},
-        )
-    if r.status_code != 200:
-        raise HTTPException(401, "Invalid session_id")
-    data = r.json()
-    email = data["email"].lower()
-
-    # Enforce college domain restriction (backend)
-    if not domain_allowed(email):
-        raise HTTPException(403, f"Only college domain emails allowed. Contact administration.")
-
-    # Admin cannot sign in via Google
-    if email == ADMIN_EMAIL:
-        raise HTTPException(403, "Admin accounts must use the admin login.")
-
-    name = data.get("name") or email.split("@")[0]
-    picture = data.get("picture")
-    session_token = data["session_token"]
-
-    existing = await db.users.find_one({"email": email}, {"_id": 0})
-    if existing:
-        user_id = existing["user_id"]
-        # Role stays as previously assigned by admin; default 'student'
-        await db.users.update_one(
-            {"user_id": user_id},
-            {"$set": {"name": name, "picture": picture, "last_login": utcnow_iso()}},
-        )
-    else:
-        user_id = f"user_{uuid.uuid4().hex[:12]}"
-        await db.users.insert_one({
-            "user_id": user_id, "email": email, "name": name, "picture": picture,
-            "role": "student", "created_at": utcnow_iso(),
-        })
-
-    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-    await db.user_sessions.insert_one({
-        "user_id": user_id, "session_token": session_token,
-        "expires_at": expires_at.isoformat(), "created_at": utcnow_iso(),
-    })
-    response.set_cookie(
-        "session_token", session_token, path="/", httponly=True, secure=True,
-        samesite="none", max_age=7 * 24 * 3600,
-    )
-    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-    return {"user": user}
+# Legacy Emergent OAuth endpoint - DISABLED
+# @api.post("/auth/session")
+# async def create_session(payload: Dict[str, str], response: Response):
+#     """Emergent Google OAuth session exchange for STUDENT/FACULTY only."""
+#     session_id = payload.get("session_id")
+#     if not session_id:
+#         raise HTTPException(400, "session_id required")
+#     async with httpx.AsyncClient(timeout=15.0) as hx:
+#         r = await hx.get(
+#             "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+#             headers={"X-Session-ID": session_id},
+#         )
+#     if r.status_code != 200:
+#         raise HTTPException(401, "Invalid session_id")
+#     data = r.json()
+#     email = data["email"].lower()
+# 
+#     # Enforce college domain restriction (backend)
+#     if not domain_allowed(email):
+#         raise HTTPException(403, f"Only college domain emails allowed. Contact administration.")
+# 
+#     # Admin cannot sign in via Google
+#     if email == ADMIN_EMAIL:
+#         raise HTTPException(403, "Admin accounts must use the admin login.")
+# 
+#     name = data.get("name") or email.split("@")[0]
+#     picture = data.get("picture")
+#     session_token = data["session_token"]
+# 
+#     existing = await db.users.find_one({"email": email}, {"_id": 0})
+#     if existing:
+#         user_id = existing["user_id"]
+#         # Role stays as previously assigned by admin; default 'student'
+#         await db.users.update_one(
+#             {"user_id": user_id},
+#             {"$set": {"name": name, "picture": picture, "last_login": utcnow_iso()}},
+#         )
+#     else:
+#         user_id = f"user_{uuid.uuid4().hex[:12]}"
+#         await db.users.insert_one({
+#             "user_id": user_id, "email": email, "name": name, "picture": picture,
+#             "role": "student", "created_at": utcnow_iso(),
+#         })
+# 
+#     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+#     await db.user_sessions.insert_one({
+#         "user_id": user_id, "session_token": session_token,
+#         "expires_at": expires_at.isoformat(), "created_at": utcnow_iso(),
+#     })
+#     response.set_cookie(
+#         "session_token", session_token, path="/", httponly=True, secure=True,
+#         samesite="none", max_age=7 * 24 * 3600,
+#     )
+#     user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+#     return {"user": user}
 
 
 @api.post("/auth/admin-login")
@@ -210,6 +223,161 @@ async def logout(request: Request, response: Response):
         await db.user_sessions.delete_one({"session_token": token})
     response.delete_cookie("session_token", path="/")
     return {"ok": True}
+
+
+# ---------------- Google OAuth 2.0 Direct Flow ----------------
+@api.get("/auth/google/url")
+async def get_google_oauth_url():
+    """Generate Google OAuth 2.0 authorization URL with PKCE-like state."""
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(500, "Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.")
+    
+    # Generate cryptographically secure state
+    state = secrets.token_urlsafe(32)
+    oauth_states[state] = datetime.now(timezone.utc).timestamp()
+    
+    # Clean up old states (older than 10 minutes)
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).timestamp()
+    oauth_states.update({k: v for k, v in oauth_states.items() if v > cutoff})
+    
+    redirect_uri = f"{FRONTEND_URL}/auth/callback"
+    
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    }
+    
+    auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+    
+    return {"url": auth_url, "state": state}
+
+
+@api.get("/auth/google/callback")
+async def google_oauth_callback(code: str, state: str, response: Response):
+    """Handle Google OAuth 2.0 callback and create user session."""
+    # Verify state to prevent CSRF
+    if state not in oauth_states:
+        raise HTTPException(400, "Invalid or expired OAuth state")
+    
+    # Remove used state
+    oauth_states.pop(state, None)
+    
+    if not code:
+        raise HTTPException(400, "Authorization code required")
+    
+    redirect_uri = f"{FRONTEND_URL}/auth/callback"
+    
+    # Exchange code for tokens
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        token_response = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    
+    if token_response.status_code != 200:
+        logger.error(f"Google token exchange failed: {token_response.text}")
+        raise HTTPException(400, "Failed to exchange authorization code")
+    
+    tokens = token_response.json()
+    access_token = tokens.get("access_token")
+    
+    # Get user info from Google
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        user_response = await client.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    
+    if user_response.status_code != 200:
+        logger.error(f"Google user info failed: {user_response.text}")
+        raise HTTPException(400, "Failed to get user information")
+    
+    user_info = user_response.json()
+    email = user_info.get("email", "").lower()
+    
+    if not email:
+        raise HTTPException(400, "Email not provided by Google")
+    
+    # Enforce college domain restriction
+    if not domain_allowed(email):
+        error_url = f"{FRONTEND_URL}/login?error=domain"
+        return RedirectResponse(url=error_url, status_code=302)
+    
+    # Admin cannot sign in via Google
+    if email == ADMIN_EMAIL:
+        error_url = f"{FRONTEND_URL}/login?error=admin_only"
+        return RedirectResponse(url=error_url, status_code=302)
+    
+    name = user_info.get("name") or email.split("@")[0]
+    picture = user_info.get("picture")
+    
+    # Create or update user
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"name": name, "picture": picture, "last_login": utcnow_iso()}},
+        )
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id,
+            "email": email,
+            "name": name,
+            "picture": picture,
+            "role": "student",
+            "created_at": utcnow_iso(),
+        })
+    
+    # Create session
+    token = f"sess_{secrets.token_urlsafe(32)}"
+    expires = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.user_sessions.insert_one({
+        "user_id": user_id,
+        "session_token": token,
+        "expires_at": expires.isoformat(),
+        "created_at": utcnow_iso(),
+    })
+    
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    
+    # Set cookie and redirect to frontend
+    redirect_response = RedirectResponse(url=f"{FRONTEND_URL}/auth/success", status_code=302)
+    redirect_response.set_cookie(
+        "session_token",
+        token,
+        path="/",
+        httponly=True,
+        secure=True,
+        samesite="none",  # Allow cross-site cookies for OAuth flow
+        max_age=7 * 24 * 3600,
+    )
+    
+    return redirect_response
+
+
+@api.get("/auth/google/status")
+async def check_google_oauth_status():
+    """Check if Google OAuth is properly configured."""
+    return {
+        "configured": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
+        "client_id_set": bool(GOOGLE_CLIENT_ID),
+        "client_secret_set": bool(GOOGLE_CLIENT_SECRET),
+        "frontend_url": FRONTEND_URL,
+    }
 
 
 # ---------------- Preview/Demo Sessions (testing only) ----------------

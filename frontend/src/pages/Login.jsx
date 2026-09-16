@@ -1,16 +1,43 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { ShieldCheck, GraduationCap } from "lucide-react";
+import api from "@/lib/api";
 
-// REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
 const Login = () => {
     const nav = useNavigate();
     const [params] = useSearchParams();
+    const [loading, setLoading] = useState(false);
+    const [oauthError, setOauthError] = useState(null);
 
-    const signIn = () => {
-        const redirectUrl = window.location.origin + "/auth/callback";
-        window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+    useEffect(() => {
+        // Check for OAuth errors from callback
+        const error = params.get("error");
+        if (error) {
+            if (error === "domain") {
+                setOauthError("Please use your college Google Workspace account.");
+            } else if (error === "admin_only") {
+                setOauthError("Admin accounts must use the admin login page.");
+            } else {
+                setOauthError("Sign-in failed. Please try again.");
+            }
+        }
+    }, [params]);
+
+    const signIn = async () => {
+        setLoading(true);
+        setOauthError(null);
+        try {
+            // Get OAuth URL from backend
+            const res = await api.get("/auth/google/url");
+            const { url } = res.data;
+            // Redirect to Google OAuth
+            window.location.href = url;
+        } catch (err) {
+            setLoading(false);
+            const detail = err?.response?.data?.detail || "Failed to initiate sign-in";
+            setOauthError(detail);
+        }
     };
 
     return (
@@ -61,25 +88,36 @@ const Login = () => {
                     <p className="text-white/60 text-sm mt-2">
                         Access your portal.
                     </p>
-                    {params.get("error") && (
+                    {oauthError && (
                         <div className="mt-4 text-sm text-rose-300" data-testid="login-error">
-                            {params.get("error") === "domain"
-                                ? "Please use your college Google Workspace account."
-                                : "Sign-in failed. Please try again."}
+                            {oauthError}
                         </div>
                     )}
                     <button
                         onClick={signIn}
-                        className="mt-8 w-full inline-flex items-center justify-center gap-3 rounded-full bg-white text-slate-900 py-3.5 font-medium hover:bg-white/90 transition-colors"
+                        disabled={loading}
+                        className="mt-8 w-full inline-flex items-center justify-center gap-3 rounded-full bg-white text-slate-900 py-3.5 font-medium hover:bg-white/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         data-testid="google-signin-btn"
                     >
-                        <svg width="18" height="18" viewBox="0 0 48 48">
-                            <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34 6.5 29.3 4.5 24 4.5 13.2 4.5 4.5 13.2 4.5 24S13.2 43.5 24 43.5 43.5 34.8 43.5 24c0-1.2-.1-2.4-.4-3.5z" />
-                            <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.7 18.9 12.5 24 12.5c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34 6.5 29.3 4.5 24 4.5 16.3 4.5 9.7 8.9 6.3 14.7z" />
-                            <path fill="#4CAF50" d="M24 43.5c5.2 0 9.9-2 13.5-5.2l-6.2-5.2c-2.1 1.5-4.7 2.4-7.3 2.4-5.2 0-9.6-3.3-11.2-8l-6.5 5C9.6 39 16.2 43.5 24 43.5z" />
-                            <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.2 4.2-4 5.6l6.2 5.2c-.4.4 6.6-4.8 6.6-14.8 0-1.2-.1-2.4-.5-3.5z" />
-                        </svg>
-                        Continue with Google
+                        {loading ? (
+                            <>
+                                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                </svg>
+                                <span>Signing in...</span>
+                            </>
+                        ) : (
+                            <>
+                                <svg width="18" height="18" viewBox="0 0 48 48">
+                                    <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34 6.5 29.3 4.5 24 4.5 13.2 4.5 4.5 13.2 4.5 24S13.2 43.5 24 43.5 43.5 34.8 43.5 24c0-1.2-.1-2.4-.4-3.5z" />
+                                    <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.7 18.9 12.5 24 12.5c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34 6.5 29.3 4.5 24 4.5 16.3 4.5 9.7 8.9 6.3 14.7z" />
+                                    <path fill="#4CAF50" d="M24 43.5c5.2 0 9.9-2 13.5-5.2l-6.2-5.2c-2.1 1.5-4.7 2.4-7.3 2.4-5.2 0-9.6-3.3-11.2-8l-6.5 5C9.6 39 16.2 43.5 24 43.5z" />
+                                    <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.2 4.2-4 5.6l6.2 5.2c-.4.4 6.6-4.8 6.6-14.8 0-1.2-.1-2.4-.5-3.5z" />
+                                </svg>
+                                <span>Continue with Google</span>
+                            </>
+                        )}
                     </button>
                     <p className="text-[11px] text-white/40 text-center pt-6">
                         By continuing you agree to KLECBA's acceptable use policy.
