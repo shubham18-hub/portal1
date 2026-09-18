@@ -70,7 +70,7 @@ async def google_oauth_callback(code: str, state: str, response: Response):
 async def check_google_oauth_status():
     """Check if Google OAuth is properly configured."""
     return {
-        "configured": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
+      "configured": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
         "client_id_set": bool(GOOGLE_CLIENT_ID),
         "client_secret_set": bool(GOOGLE_CLIENT_SECRET),
         "frontend_url": FRONTEND_URL,
@@ -79,8 +79,8 @@ async def check_google_oauth_status():
 
 #### **Environment Variables Required**
 ```bash
-GOOGLE_CLIENT_ID="YOUR_CLIENT_ID_HERE"
-GOOGLE_CLIENT_SECRET="YOUR_CLIENT_SECRET_HERE"
+GOOGLE_CLIENT_ID="your-google-client-id.apps.googleusercontent.com"
+GOOGLE_CLIENT_SECRET="your-google-client-secret"
 FRONTEND_URL="https://klecba-frontend.onrender.com"
 ```
 
@@ -142,9 +142,9 @@ if (code && state) {
 ```
 
 #### **Regenerated Lock Files**
-- Deleted `frontend/yarn.lock`
-- Deleted `frontend/package-lock.json`
-- Ran `yarn install` to generate clean dependencies
+// Deleted `frontend/yarn.lock`
+// Deleted `frontend/package-lock.json`
+// Ran `yarn install` to generate clean dependencies
 
 ---
 
@@ -311,8 +311,8 @@ Expected: {"url":"https://accounts.google.com/o/oauth2/v2/auth?...","state":"...
 ## 🔐 **Google Cloud Console Configuration**
 
 ### **OAuth 2.0 Client ID**
-- **Client ID:** `YOUR_CLIENT_ID_HERE`
-- **Client Secret:** `YOUR_CLIENT_SECRET_HERE`
+- **Client ID:** set privately in the deployment provider
+- **Client Secret:** set privately in the deployment provider; never commit it
 
 ### **Authorized JavaScript Origins**
 - `https://klecba-frontend.onrender.com`

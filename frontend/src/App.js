@@ -27,6 +27,8 @@ import ResponsesAdmin from "@/pages/admin/ResponsesAdmin";
 import EventsAdmin from "@/pages/admin/EventsAdmin";
 import QuestionInsights from "@/pages/admin/QuestionInsights";
 import RemindersAdmin from "@/pages/admin/RemindersAdmin";
+import TasksAdmin from "@/pages/admin/TasksAdmin";
+import SubmissionsAdmin from "@/pages/admin/SubmissionsAdmin";
 import FacultyPortal from "@/pages/FacultyPortal";
 
 function RoleRedirect() {
@@ -68,6 +70,8 @@ function AppRouter() {
                 <Route path="responses" element={<ResponsesAdmin />} />
                 <Route path="insights" element={<QuestionInsights />} />
                 <Route path="reminders" element={<RemindersAdmin />} />
+                <Route path="tasks" element={<TasksAdmin />} />
+                <Route path="submissions" element={<SubmissionsAdmin />} />
                 <Route path="events" element={<EventsAdmin />} />
                 <Route path="analytics" element={<AdminHome />} />
             </Route>

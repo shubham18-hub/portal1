@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import Layout from "@/components/Layout";
 import { Link } from "react-router-dom";
-import api from "@/lib/api";
+import api, { API_BASE } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { motion } from "framer-motion";
 import { AlertCircle, ArrowRight, CheckCircle2, Clock, Lock, BookOpen, Award, Users, Building2 } from "lucide-react";
@@ -18,20 +18,28 @@ const StudentDashboard = () => {
     const { user, profile } = useAuth();
     const [cats, setCats] = useState([]);
     const [mine, setMine] = useState([]);
+    const [programs, setPrograms] = useState([]);
+    const [stages, setStages] = useState([]);
+    const [tasks, setTasks] = useState([]);
+    const [submissions, setSubmissions] = useState([]);
+    const [uploadingTask, setUploadingTask] = useState(null);
     const [loading, setLoading] = useState(true);
     const [refs, setRefs] = useState({});
 
     useEffect(() => {
         (async () => {
             try {
-                const [c, m, p, y, se, di, ay] = await Promise.all([
+                const [c, m, p, y, se, di, ay, st, ta, su] = await Promise.all([
                     api.get("/my/categories"),
                     api.get("/feedback/mine").catch(() => ({ data: [] })),
                     api.get("/programs"), api.get("/year_levels"),
                     api.get("/semesters"), api.get("/divisions"), api.get("/academic_years"),
+                    api.get("/stages"), api.get("/tasks"),
+                    api.get("/submissions/mine").catch(() => ({ data: [] })),
                 ]);
                 setCats(c.data);
                 setMine(m.data.slice(0, 6));
+                setPrograms(p.data); setStages(st.data); setTasks(ta.data); setSubmissions(su.data);
                 setRefs({
                     programs: p.data, years: y.data, sems: se.data, divs: di.data, ayears: ay.data,
                 });
@@ -41,6 +49,20 @@ const StudentDashboard = () => {
 
     const nameOf = (arr, id) => arr?.find((x) => x.id === id)?.name || "—";
     const hasProfile = !!profile;
+
+    const uploadTask = async (event, taskId) => {
+        const selectedFile = event.target.files?.[0];
+        if (!selectedFile) return;
+        setUploadingTask(taskId);
+        try {
+            const formData = new FormData();
+            formData.append("file", selectedFile);
+            const response = await api.post(`/tasks/${taskId}/submission`, formData);
+            setSubmissions((current) => [response.data, ...current]);
+        } catch (error) {
+            window.alert(error?.response?.data?.detail || "Unable to upload submission");
+        } finally { setUploadingTask(null); event.target.value = ""; }
+    };
 
     return (
         <Layout>
@@ -54,6 +76,55 @@ const StudentDashboard = () => {
                         Your feedback helps us improve teaching and learning.
                     </p>
                 </div>
+
+                <section className="mb-8" data-testid="learning-plan">
+                    <div className="flex items-end justify-between mb-4">
+                        <div>
+                            <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">MongoDB learning plan</div>
+                            <h2 className="font-display text-2xl font-medium tracking-tight text-slate-900">Your programs and tasks</h2>
+                        </div>
+                        <div className="text-xs text-slate-500">{tasks.length} task{tasks.length === 1 ? "" : "s"}</div>
+                    </div>
+                    {programs.length === 0 ? (
+                        <div className="glass rounded-2xl p-6 text-sm text-slate-500">No programs are available yet.</div>
+                    ) : (
+                        <div className="space-y-4">
+                            {programs.map((program) => {
+                                const programStages = stages.filter((stage) => stage.program_id === program.id);
+                                return (
+                                    <div key={program.id} className="glass rounded-2xl p-5">
+                                        <div className="font-display text-lg font-semibold text-slate-900">{program.name}</div>
+                                        <div className="text-xs text-slate-500 mt-1">{program.code || "Program"}</div>
+                                        <div className="mt-4 grid md:grid-cols-2 gap-3">
+                                            {programStages.map((stage) => {
+                                                const stageTasks = tasks.filter((task) => task.stage_id === stage.id);
+                                                return (
+                                                    <div key={stage.id} className="rounded-xl border border-slate-200 bg-white/50 p-4">
+                                                        <div className="text-xs font-bold uppercase tracking-[0.15em] text-slate-500">Stage {stage.order}</div>
+                                                        <div className="font-medium text-slate-900 mt-1">{stage.name}</div>
+                                                        <div className="mt-3 space-y-2">
+                                                            {stageTasks.map((task) => {
+                                                                const submission = submissions.find((item) => item.task_id === task.id);
+                                                                return <div key={task.id} className="rounded-lg bg-slate-50 px-3 py-3 text-sm text-slate-700" data-testid={`student-task-${task.id}`}>
+                                                                    <div className="font-medium">{task.title}</div>
+                                                                    <div className="text-xs text-slate-500 mt-1">{task.description}</div>
+                                                                    {task.deadline && <div className="text-xs text-slate-500 mt-2">Deadline: {new Date(task.deadline).toLocaleString()}</div>}
+                                                                    {submission ? <div className="mt-3 text-xs text-emerald-700"><div className="flex items-center justify-between gap-3"><span>{submission.status === "evaluated" ? `Evaluated · ${submission.marks}/100` : `Submitted · ${new Date(submission.submitted_at).toLocaleString()}`}</span><a href={`${API_BASE}/submissions/${submission.id}/file`} target="_blank" rel="noreferrer" className="font-medium underline">Open PDF</a></div>{submission.status === "evaluated" && submission.feedback && <div className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-slate-700">{submission.feedback}</div>}</div> : <label className="mt-3 inline-flex cursor-pointer items-center rounded-lg bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700"><input type="file" accept="application/pdf,.pdf" className="sr-only" onChange={(event) => uploadTask(event, task.id)} disabled={uploadingTask === task.id} />{uploadingTask === task.id ? "Uploading..." : "Upload PDF"}</label>}
+                                                                </div>;
+                                                            })}
+                                                            {stageTasks.length === 0 && <div className="text-xs text-slate-400">No tasks in this stage.</div>}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                            {programStages.length === 0 && <div className="text-sm text-slate-400">No stages in this program yet.</div>}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </section>
 
                 {!hasProfile ? (
                     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="glass rounded-2xl p-8 border border-amber-300/50" data-testid="no-profile-banner">

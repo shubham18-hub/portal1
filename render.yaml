@@ -25,6 +25,8 @@ services:
         sync: false
       - key: FRONTEND_URL
         value: https://klecba-frontend.onrender.com
+      - key: MAX_SUBMISSION_FILE_SIZE
+        value: "10485760"
     healthCheckPath: /api/health
 
   # Frontend Web Service (Docker)

@@ -1,5 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Query
-from fastapi.responses import StreamingResponse, RedirectResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Query, UploadFile, File
+from fastapi.responses import StreamingResponse, RedirectResponse, FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -13,11 +13,13 @@ import secrets
 import hashlib
 import base64
 import json
+import math
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 import httpx
+from pymongo.errors import DuplicateKeyError
 from openpyxl import Workbook
 from urllib.parse import urlencode, urlparse, parse_qs
 
@@ -41,6 +43,9 @@ ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+MAX_SUBMISSION_FILE_SIZE = int(os.environ.get("MAX_SUBMISSION_FILE_SIZE", str(10 * 1024 * 1024)))
+UPLOAD_DIR = ROOT_DIR / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # OAuth state store (in production, use Redis or similar)
 oauth_states: Dict[str, float] = {}
@@ -51,13 +56,41 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("klecba")
 
 
+@app.on_event("startup")
+async def on_startup():
+    try:
+        await db.task_submissions.create_index([("user_id", 1), ("task_id", 1)], unique=True, name="unique_student_task_submission")
+    except Exception as error:
+        logger.error("Unable to create submission uniqueness index: %s", type(error).__name__)
+
+
 # ---------------- Helpers ----------------
 def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def normalize_deadline(value: Any) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(400, "deadline must be a valid ISO datetime") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 def uid(prefix: str = "") -> str:
     return f"{prefix}{uuid.uuid4().hex[:16]}" if prefix else uuid.uuid4().hex
+
+
+def public_user(user: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in user.items()
+        if key not in {"_id", "password_hash", "session_token"}
+    }
 
 
 def domain_allowed(email: str) -> bool:
@@ -119,61 +152,61 @@ async def create_session_for(user_id: str, response: Response, remember_days: in
 
 
 # ---------------- Auth (Google + Admin password) ----------------
-# Legacy Emergent OAuth endpoint - DISABLED
-# @api.post("/auth/session")
-# async def create_session(payload: Dict[str, str], response: Response):
-#     """Emergent Google OAuth session exchange for STUDENT/FACULTY only."""
-#     session_id = payload.get("session_id")
-#     if not session_id:
-#         raise HTTPException(400, "session_id required")
-#     async with httpx.AsyncClient(timeout=15.0) as hx:
-#         r = await hx.get(
-#             "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-#             headers={"X-Session-ID": session_id},
-#         )
-#     if r.status_code != 200:
-#         raise HTTPException(401, "Invalid session_id")
-#     data = r.json()
-#     email = data["email"].lower()
-# 
-#     # Enforce college domain restriction (backend)
-#     if not domain_allowed(email):
-#         raise HTTPException(403, f"Only college domain emails allowed. Contact administration.")
-# 
-#     # Admin cannot sign in via Google
-#     if email == ADMIN_EMAIL:
-#         raise HTTPException(403, "Admin accounts must use the admin login.")
-# 
-#     name = data.get("name") or email.split("@")[0]
-#     picture = data.get("picture")
-#     session_token = data["session_token"]
-# 
-#     existing = await db.users.find_one({"email": email}, {"_id": 0})
-#     if existing:
-#         user_id = existing["user_id"]
-#         # Role stays as previously assigned by admin; default 'student'
-#         await db.users.update_one(
-#             {"user_id": user_id},
-#             {"$set": {"name": name, "picture": picture, "last_login": utcnow_iso()}},
-#         )
-#     else:
-#         user_id = f"user_{uuid.uuid4().hex[:12]}"
-#         await db.users.insert_one({
-#             "user_id": user_id, "email": email, "name": name, "picture": picture,
-#             "role": "student", "created_at": utcnow_iso(),
-#         })
-# 
-#     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-#     await db.user_sessions.insert_one({
-#         "user_id": user_id, "session_token": session_token,
-#         "expires_at": expires_at.isoformat(), "created_at": utcnow_iso(),
-#     })
-#     response.set_cookie(
-#         "session_token", session_token, path="/", httponly=True, secure=True,
-#         samesite="none", max_age=7 * 24 * 3600,
-#     )
-#     user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-#     return {"user": user}
+@api.post("/auth/session")
+async def create_session(payload: Dict[str, str], response: Response):
+    """Legacy Emergent Google OAuth session exchange for STUDENT/FACULTY only."""
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(400, "session_id required")
+    async with httpx.AsyncClient(timeout=15.0) as hx:
+        r = await hx.get(
+            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+            headers={"X-Session-ID": session_id},
+        )
+    if r.status_code != 200:
+        raise HTTPException(401, "Invalid session_id")
+    data = r.json()
+    email = (data.get("email") or "").lower().strip()
+    if not email:
+        raise HTTPException(401, "Invalid session_id")
+
+    if not domain_allowed(email):
+        raise HTTPException(403, "Only college domain emails allowed. Contact administration.")
+
+    if email == ADMIN_EMAIL:
+        raise HTTPException(403, "Admin accounts must use the admin login.")
+
+    name = data.get("name") or email.split("@")[0]
+    picture = data.get("picture")
+    session_token = data.get("session_token")
+    if not session_token:
+        raise HTTPException(401, "Invalid session_id")
+
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"name": name, "picture": picture, "last_login": utcnow_iso()}},
+        )
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id, "email": email, "name": name, "picture": picture,
+            "role": "student", "created_at": utcnow_iso(),
+        })
+
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.user_sessions.insert_one({
+        "user_id": user_id, "session_token": session_token,
+        "expires_at": expires_at.isoformat(), "created_at": utcnow_iso(),
+    })
+    response.set_cookie(
+        "session_token", session_token, path="/", httponly=True, secure=True,
+        samesite="none", max_age=7 * 24 * 3600,
+    )
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    return {"user": public_user(user)}
 
 
 @api.post("/auth/admin-login")
@@ -200,7 +233,53 @@ async def admin_login(payload: Dict[str, str], response: Response):
         })
     await create_session_for(user_id, response)
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-    return {"user": user}
+    return {"user": public_user(user)}
+
+
+@api.post("/auth/register")
+async def register(payload: Dict[str, str], response: Response):
+    email = (payload.get("email") or "").lower().strip()
+    password = payload.get("password") or ""
+    name = (payload.get("name") or "").strip()
+    if not email or "@" not in email or not name:
+        raise HTTPException(400, "name and valid email are required")
+    if len(password) < 8:
+        raise HTTPException(400, "password must be at least 8 characters")
+    if not domain_allowed(email):
+        raise HTTPException(403, "Only college domain emails are allowed")
+    if email == ADMIN_EMAIL:
+        raise HTTPException(403, "Admin accounts must use the admin login")
+    if await db.users.find_one({"email": email}, {"_id": 0}):
+        raise HTTPException(409, "An account with this email already exists")
+
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    user = {
+        "user_id": user_id,
+        "email": email,
+        "name": name,
+        "role": "student",
+        "picture": None,
+        "password_hash": bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
+        "created_at": utcnow_iso(),
+    }
+    await db.users.insert_one(user)
+    await create_session_for(user_id, response)
+    return {"user": public_user(user)}
+
+
+@api.post("/auth/login")
+async def login(payload: Dict[str, str], response: Response):
+    email = (payload.get("email") or "").lower().strip()
+    password = payload.get("password") or ""
+    if not email or not password:
+        raise HTTPException(400, "email and password are required")
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    password_hash = user.get("password_hash") if user else None
+    if not user or not password_hash or not bcrypt.checkpw(password.encode(), password_hash.encode()):
+        raise HTTPException(401, "Invalid credentials")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"last_login": utcnow_iso()}})
+    await create_session_for(user["user_id"], response)
+    return {"user": public_user(user)}
 
 
 @api.get("/auth/me")
@@ -209,7 +288,7 @@ async def me(request: Request):
     profile = None
     if user.get("role") == "student":
         profile = await db.student_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
-    return {"user": user, "profile": profile}
+    return {"user": public_user(user), "profile": profile}
 
 
 @api.post("/auth/logout")
@@ -315,10 +394,11 @@ async def google_oauth_callback(code: str, state: str, response: Response):
         error_url = f"{FRONTEND_URL}/login?error=domain"
         return RedirectResponse(url=error_url, status_code=302)
     
-    # Admin cannot sign in via Google
-    if email == ADMIN_EMAIL:
-        error_url = f"{FRONTEND_URL}/login?error=admin_only"
-        return RedirectResponse(url=error_url, status_code=302)
+    # NOTE: Temporarily allowing admin to sign in via Google OAuth for testing
+    # In production, uncomment the check below to force admin-only login
+    # if email == ADMIN_EMAIL:
+    #     error_url = f"{FRONTEND_URL}/login?error=admin_only"
+    #     return RedirectResponse(url=error_url, status_code=302)
     
     name = user_info.get("name") or email.split("@")[0]
     picture = user_info.get("picture")
@@ -333,12 +413,14 @@ async def google_oauth_callback(code: str, state: str, response: Response):
         )
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
+        # Determine user role: admin if email matches ADMIN_EMAIL, otherwise student
+        user_role = "admin" if email == ADMIN_EMAIL else "student"
         await db.users.insert_one({
             "user_id": user_id,
             "email": email,
             "name": name,
             "picture": picture,
-            "role": "student",
+            "role": user_role,
             "created_at": utcnow_iso(),
         })
     
@@ -490,7 +572,7 @@ def struct_router(entity: str, fields: List[str]):
         ref_map = {
             "departments": [("programs", "department_id"), ("users", "department_id"),
                              ("student_profiles", "department_id"), ("feedback_cycles", "department_id")],
-            "programs": [("faculty_assignments", "program_id"), ("student_profiles", "program_id"), ("feedback_cycles", "program_id")],
+            "programs": [("faculty_assignments", "program_id"), ("student_profiles", "program_id"), ("feedback_cycles", "program_id"), ("stages", "program_id")],
             "subjects": [("faculty_assignments", "subject_id")],
             "divisions": [("faculty_assignments", "division_id"), ("student_profiles", "division_id")],
             "semesters": [("faculty_assignments", "semester_id"), ("student_profiles", "semester_id"), ("feedback_cycles", "semester_id")],
@@ -506,6 +588,261 @@ def struct_router(entity: str, fields: List[str]):
 
 for _entity, _fields in STRUCTURE_ENTITIES.items():
     struct_router(_entity, _fields)
+
+
+# ---------------- Program stages and tasks ----------------
+@api.get("/stages")
+async def list_stages(request: Request, program_id: Optional[str] = Query(None)):
+    await require_role(request, ["admin", "student"])
+    query = {"program_id": program_id} if program_id else {}
+    return await db.stages.find(query, {"_id": 0}).sort("order", 1).to_list(2000)
+
+
+@api.post("/stages")
+async def create_stage(payload: Dict[str, Any], request: Request):
+    await require_admin(request)
+    program_id = (payload.get("program_id") or "").strip()
+    name = (payload.get("name") or "").strip()
+    if not program_id or not name:
+        raise HTTPException(400, "program_id and name are required")
+    if not await db.programs.find_one({"id": program_id}, {"_id": 0}):
+        raise HTTPException(404, "Program not found")
+    stage = {
+        "id": uid(), "program_id": program_id, "name": name,
+        "order": int(payload.get("order") or 1), "active": True,
+        "created_at": utcnow_iso(),
+    }
+    await db.stages.insert_one(stage)
+    stage.pop("_id", None)
+    return stage
+
+
+@api.put("/stages/{stage_id}")
+async def update_stage(stage_id: str, payload: Dict[str, Any], request: Request):
+    await require_admin(request)
+    existing = await db.stages.find_one({"id": stage_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Stage not found")
+    updates = {}
+    if "name" in payload and str(payload["name"]).strip():
+        updates["name"] = str(payload["name"]).strip()
+    if "order" in payload:
+        updates["order"] = int(payload["order"])
+    if "active" in payload:
+        updates["active"] = bool(payload["active"])
+    if updates:
+        await db.stages.update_one({"id": stage_id}, {"$set": updates})
+    return await db.stages.find_one({"id": stage_id}, {"_id": 0})
+
+
+@api.delete("/stages/{stage_id}")
+async def delete_stage(stage_id: str, request: Request):
+    await require_admin(request)
+    if not await db.stages.find_one({"id": stage_id}, {"_id": 0}):
+        raise HTTPException(404, "Stage not found")
+    if await db.tasks.count_documents({"stage_id": stage_id}):
+        raise HTTPException(400, "Cannot delete: stage has tasks")
+    await db.stages.delete_one({"id": stage_id})
+    return {"ok": True}
+
+
+@api.get("/tasks")
+async def list_tasks(request: Request, stage_id: Optional[str] = Query(None), program_id: Optional[str] = Query(None)):
+    await require_role(request, ["admin", "student"])
+    query = {}
+    if stage_id:
+        query["stage_id"] = stage_id
+    if program_id:
+        query["program_id"] = program_id
+    return await db.tasks.find(query, {"_id": 0}).sort([("stage_id", 1), ("order", 1), ("created_at", 1)]).to_list(5000)
+
+
+@api.post("/tasks")
+async def create_task(payload: Dict[str, Any], request: Request):
+    await require_admin(request)
+    stage_id = (payload.get("stage_id") or "").strip()
+    title = (payload.get("title") or "").strip()
+    if not stage_id or not title:
+        raise HTTPException(400, "stage_id and title are required")
+    stage = await db.stages.find_one({"id": stage_id}, {"_id": 0})
+    if not stage:
+        raise HTTPException(404, "Stage not found")
+    task = {
+        "id": uid(), "program_id": stage["program_id"], "stage_id": stage_id,
+        "title": title, "description": (payload.get("description") or "").strip(),
+        "deadline": normalize_deadline(payload.get("deadline")),
+        "order": int(payload.get("order") or 1), "active": True,
+        "created_at": utcnow_iso(), "updated_at": utcnow_iso(),
+    }
+    await db.tasks.insert_one(task)
+    task.pop("_id", None)
+    return task
+
+
+@api.put("/tasks/{task_id}")
+async def update_task(task_id: str, payload: Dict[str, Any], request: Request):
+    await require_admin(request)
+    existing = await db.tasks.find_one({"id": task_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Task not found")
+    updates = {"updated_at": utcnow_iso()}
+    if "title" in payload and str(payload["title"]).strip():
+        updates["title"] = str(payload["title"]).strip()
+    if "description" in payload:
+        updates["description"] = str(payload["description"] or "").strip()
+    if "deadline" in payload:
+        updates["deadline"] = normalize_deadline(payload.get("deadline"))
+    if "order" in payload:
+        updates["order"] = int(payload["order"])
+    if "active" in payload:
+        updates["active"] = bool(payload["active"])
+    await db.tasks.update_one({"id": task_id}, {"$set": updates})
+    return await db.tasks.find_one({"id": task_id}, {"_id": 0})
+
+
+@api.delete("/tasks/{task_id}")
+async def delete_task(task_id: str, request: Request):
+    await require_admin(request)
+    if not await db.tasks.find_one({"id": task_id}, {"_id": 0}):
+        raise HTTPException(404, "Task not found")
+    await db.tasks.delete_one({"id": task_id})
+    return {"ok": True}
+
+
+# ---------------- Task submissions ----------------
+async def _submission_for_user(task_id: str, user_id: str):
+    return await db.task_submissions.find_one({"task_id": task_id, "user_id": user_id}, {"_id": 0})
+
+
+@api.post("/tasks/{task_id}/submission")
+async def submit_task(task_id: str, request: Request, file: UploadFile = File(...)):
+    user = await require_role(request, ["student"])
+    task = await db.tasks.find_one({"id": task_id}, {"_id": 0})
+    if not task or task.get("active") is False:
+        raise HTTPException(404, "Task not found")
+    if await _submission_for_user(task_id, user["user_id"]):
+        raise HTTPException(409, "A submission already exists for this task")
+    deadline = task.get("deadline")
+    if deadline:
+        deadline_dt = datetime.fromisoformat(deadline)
+        if deadline_dt.tzinfo is None:
+            deadline_dt = deadline_dt.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > deadline_dt:
+            raise HTTPException(400, "The task deadline has passed")
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Only PDF files are allowed")
+    if file.content_type not in ("application/pdf", "application/octet-stream"):
+        raise HTTPException(400, "Only PDF files are allowed")
+
+    submission_id = uid("sub_")
+    stored_name = f"{submission_id}.pdf"
+    stored_path = UPLOAD_DIR / stored_name
+    total_size = 0
+    first_chunk = True
+    try:
+        with stored_path.open("wb") as output:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                if first_chunk and not chunk.startswith(b"%PDF-"):
+                    raise HTTPException(400, "The uploaded file is not a valid PDF")
+                first_chunk = False
+                total_size += len(chunk)
+                if total_size > MAX_SUBMISSION_FILE_SIZE:
+                    raise HTTPException(413, "PDF exceeds the maximum file size")
+                output.write(chunk)
+    except HTTPException:
+        stored_path.unlink(missing_ok=True)
+        raise
+    except Exception:
+        stored_path.unlink(missing_ok=True)
+        raise HTTPException(500, "Unable to store the uploaded PDF")
+    finally:
+        await file.close()
+
+    submission = {
+        "id": submission_id,
+        "task_id": task_id,
+        "program_id": task["program_id"],
+        "stage_id": task["stage_id"],
+        "user_id": user["user_id"],
+        "student_name": user.get("name"),
+        "student_email": user.get("email"),
+        "task_title": task["title"],
+        "original_filename": Path(file.filename).name,
+        "stored_filename": stored_name,
+        "content_type": "application/pdf",
+        "size_bytes": total_size,
+        "submitted_at": utcnow_iso(),
+        "status": "submitted",
+    }
+    try:
+        await db.task_submissions.insert_one(submission)
+    except DuplicateKeyError as exc:
+        stored_path.unlink(missing_ok=True)
+        raise HTTPException(409, "A submission already exists for this task") from exc
+    submission.pop("_id", None)
+    return submission
+
+
+@api.get("/submissions/mine")
+async def my_task_submissions(request: Request):
+    user = await require_role(request, ["student"])
+    return await db.task_submissions.find({"user_id": user["user_id"]}, {"_id": 0}).sort("submitted_at", -1).to_list(1000)
+
+
+@api.get("/tasks/{task_id}/submission")
+async def task_submission(task_id: str, request: Request):
+    user = await require_role(request, ["student"])
+    submission = await _submission_for_user(task_id, user["user_id"])
+    return submission or {"status": "not_submitted", "task_id": task_id}
+
+
+@api.get("/submissions")
+async def list_task_submissions(request: Request):
+    await require_admin(request)
+    return await db.task_submissions.find({}, {"_id": 0}).sort("submitted_at", -1).to_list(5000)
+
+
+@api.put("/submissions/{submission_id}/evaluation")
+async def evaluate_submission(submission_id: str, payload: Dict[str, Any], request: Request):
+    admin = await require_admin(request)
+    submission = await db.task_submissions.find_one({"id": submission_id}, {"_id": 0})
+    if not submission:
+        raise HTTPException(404, "Submission not found")
+    try:
+        marks = float(payload.get("marks"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "marks must be a number") from exc
+    if not math.isfinite(marks) or not 0 <= marks <= 100:
+        raise HTTPException(400, "marks must be between 0 and 100")
+    feedback = str(payload.get("feedback") or "").strip()
+    await db.task_submissions.update_one(
+        {"id": submission_id},
+        {"$set": {
+            "marks": marks,
+            "feedback": feedback,
+            "status": "evaluated",
+            "evaluated_at": utcnow_iso(),
+            "evaluated_by": admin["user_id"],
+        }},
+    )
+    return await db.task_submissions.find_one({"id": submission_id}, {"_id": 0})
+
+
+@api.get("/submissions/{submission_id}/file")
+async def download_submission(submission_id: str, request: Request):
+    user = await get_current_user(request)
+    submission = await db.task_submissions.find_one({"id": submission_id}, {"_id": 0})
+    if not submission:
+        raise HTTPException(404, "Submission not found")
+    if user.get("role") != "admin" and submission.get("user_id") != user.get("user_id"):
+        raise HTTPException(403, "You cannot access this submission")
+    stored_path = UPLOAD_DIR / Path(submission["stored_filename"]).name
+    if not stored_path.is_file():
+        raise HTTPException(404, "Uploaded PDF is missing")
+    return FileResponse(stored_path, media_type="application/pdf", filename=Path(submission["original_filename"]).name)
 
 
 # ---------------- Faculty (users with role=faculty) ----------------
@@ -1756,12 +2093,26 @@ async def root():
     return {"app": "KLECBA Feedback Portal", "ok": True}
 
 
+@app.get("/")
+async def app_root():
+    return {"app": "KLECBA Feedback Portal", "ok": True}
+
+
+@app.get("/api")
+async def api_root():
+    return {"app": "KLECBA Feedback Portal", "ok": True}
+
+
 app.include_router(api)
+
+configured_origins = [origin.strip() for origin in os.environ.get("CORS_ORIGINS", "*").split(",") if origin.strip()]
+if "*" in configured_origins:
+    configured_origins = ["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000", "http://127.0.0.1:3001", FRONTEND_URL]
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=configured_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1776,8 +2127,8 @@ async def health_check():
         await db.command("ping")
         return {"status": "healthy", "database": "connected"}
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return {"status": "unhealthy", "error": str(e)}
+        logger.error("Health check failed: %s", type(e).__name__)
+        return {"status": "unhealthy", "database": "unavailable"}
 
 
 @app.on_event("shutdown")

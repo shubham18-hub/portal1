@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import api, { API_BASE } from "@/lib/api";
 import { Download, Search } from "lucide-react";
 
@@ -8,7 +8,7 @@ const ResponsesAdmin = () => {
     const [depts, setDepts] = useState([]);
     const [filters, setFilters] = useState({ cycle_id: "", department_id: "" });
 
-    const load = async () => {
+    const load = useCallback(async () => {
         const params = new URLSearchParams();
         Object.entries(filters).forEach(([k, v]) => v && params.set(k, v));
         const [r, c, d] = await Promise.all([
@@ -17,8 +17,8 @@ const ResponsesAdmin = () => {
             api.get("/departments"),
         ]);
         setResponses(r.data); setCycles(c.data); setDepts(d.data);
-    };
-    useEffect(() => { load(); }, [filters]);
+    }, [filters]);
+    useEffect(() => { load(); }, [load]);
 
     const download = (fmt) => {
         const params = new URLSearchParams();

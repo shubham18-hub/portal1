@@ -98,7 +98,7 @@ const TemplatesAdmin = () => {
 
 const TemplateEditor = ({ t, onClose, onSave, onPublish, onPreview }) => {
     const [local, setLocal] = useState(t);
-    useEffect(() => setLocal(t), [t.id]);
+    useEffect(() => setLocal(t), [t]);
 
     const setQ = (idx, patch) => {
         const qs = [...(local.questions || [])];

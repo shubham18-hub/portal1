@@ -3,7 +3,7 @@ import { NavLink, useNavigate, useLocation, Outlet } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
     LayoutDashboard, GraduationCap, Users, School, ClipboardList,
-    CalendarDays, FileText, MessageSquare, LineChart, LogOut, Menu, X, Bell,
+    CalendarDays, FileText, MessageSquare, LineChart, ListTodo, FileCheck2, LogOut, Menu, X, Bell,
 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -14,6 +14,8 @@ const items = [
     { to: "/admin/students", label: "Students", icon: GraduationCap },
     { to: "/admin/templates", label: "Feedback Templates", icon: FileText },
     { to: "/admin/cycles", label: "Feedback Cycles", icon: ClipboardList },
+    { to: "/admin/tasks", label: "Program Tasks", icon: ListTodo },
+    { to: "/admin/submissions", label: "Submissions", icon: FileCheck2 },
     { to: "/admin/responses", label: "Responses", icon: MessageSquare },
     { to: "/admin/insights", label: "Question Insights", icon: LineChart },
     { to: "/admin/events", label: "Events", icon: CalendarDays },

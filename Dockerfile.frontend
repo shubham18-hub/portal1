@@ -6,11 +6,11 @@ WORKDIR /app
 # Copy all frontend files
 COPY frontend/ .
 
-# Install dependencies
-RUN yarn install
+# Install dependencies from the committed npm lockfile
+RUN npm ci
 
 # Build
-RUN yarn build
+RUN npm run build
 
 # Runtime stage
 FROM node:24-alpine

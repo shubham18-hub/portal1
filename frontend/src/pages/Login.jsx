@@ -9,6 +9,10 @@ const Login = () => {
     const [params] = useSearchParams();
     const [loading, setLoading] = useState(false);
     const [oauthError, setOauthError] = useState(null);
+    const [isRegistering, setIsRegistering] = useState(false);
+    const [name, setName] = useState("");
+    const [email, setEmail] = useState("");
+    const [password, setPassword] = useState("");
 
     useEffect(() => {
         // Check for OAuth errors from callback
@@ -37,6 +41,21 @@ const Login = () => {
             setLoading(false);
             const detail = err?.response?.data?.detail || "Failed to initiate sign-in";
             setOauthError(detail);
+        }
+    };
+
+    const submitCredentials = async (event) => {
+        event.preventDefault();
+        setLoading(true);
+        setOauthError(null);
+        try {
+            const path = isRegistering ? "/auth/register" : "/auth/login";
+            const payload = isRegistering ? { name, email, password } : { email, password };
+            await api.post(path, payload);
+            window.location.href = "/dashboard";
+        } catch (err) {
+            setLoading(false);
+            setOauthError(err?.response?.data?.detail || "Authentication failed");
         }
     };
 
@@ -85,18 +104,64 @@ const Login = () => {
                     <h2 className="font-display text-2xl md:text-3xl font-medium">
                         Feedback Portal
                     </h2>
-                    <p className="text-white/60 text-sm mt-2">
-                        Access your portal.
-                    </p>
+                    <p className="text-white/60 text-sm mt-2">Use your portal account to continue.</p>
                     {oauthError && (
                         <div className="mt-4 text-sm text-rose-300" data-testid="login-error">
                             {oauthError}
                         </div>
                     )}
+                    <form onSubmit={submitCredentials} className="mt-6 space-y-3">
+                        {isRegistering && (
+                            <input
+                                value={name}
+                                onChange={(event) => setName(event.target.value)}
+                                placeholder="Full name"
+                                required
+                                className="w-full rounded-xl bg-white/10 border border-white/15 px-4 py-3 text-sm outline-none placeholder:text-white/45 focus:border-white/50"
+                            />
+                        )}
+                        <input
+                            type="email"
+                            value={email}
+                            onChange={(event) => setEmail(event.target.value)}
+                            placeholder="College email"
+                            required
+                            className="w-full rounded-xl bg-white/10 border border-white/15 px-4 py-3 text-sm outline-none placeholder:text-white/45 focus:border-white/50"
+                        />
+                        <input
+                            type="password"
+                            value={password}
+                            onChange={(event) => setPassword(event.target.value)}
+                            placeholder="Password"
+                            minLength={8}
+                            required
+                            className="w-full rounded-xl bg-white/10 border border-white/15 px-4 py-3 text-sm outline-none placeholder:text-white/45 focus:border-white/50"
+                        />
+                        <button
+                            type="submit"
+                            disabled={loading}
+                            className="w-full inline-flex items-center justify-center gap-3 rounded-full bg-white text-slate-900 py-3.5 font-medium hover:bg-white/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            data-testid="login-submit-button"
+                        >
+                            {loading ? "Please wait..." : isRegistering ? "Create student account" : "Sign in"}
+                        </button>
+                    </form>
+                    <button
+                        type="button"
+                        onClick={() => { setIsRegistering((value) => !value); setOauthError(null); }}
+                        className="mt-4 w-full text-sm text-white/70 hover:text-white transition-colors"
+                    >
+                        {isRegistering ? "Already have an account? Sign in" : "New student? Create an account"}
+                    </button>
+                    <div className="my-5 flex items-center gap-3 text-[11px] uppercase tracking-[0.2em] text-white/35">
+                        <span className="h-px flex-1 bg-white/15" />
+                        <span>or</span>
+                        <span className="h-px flex-1 bg-white/15" />
+                    </div>
                     <button
                         onClick={signIn}
                         disabled={loading}
-                        className="mt-8 w-full inline-flex items-center justify-center gap-3 rounded-full bg-white text-slate-900 py-3.5 font-medium hover:bg-white/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="w-full inline-flex items-center justify-center gap-3 rounded-full border border-white/25 text-white py-3.5 font-medium hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         data-testid="google-signin-btn"
                     >
                         {loading ? (
