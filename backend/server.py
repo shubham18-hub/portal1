@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import asyncio
 import io
 import csv
 import logging
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 import httpx
+import boto3
 from pymongo.errors import DuplicateKeyError
 from openpyxl import Workbook
 from urllib.parse import urlencode, urlparse, parse_qs
@@ -46,6 +48,13 @@ FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 MAX_SUBMISSION_FILE_SIZE = int(os.environ.get("MAX_SUBMISSION_FILE_SIZE", str(10 * 1024 * 1024)))
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "local").strip().lower()
+S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL", "")
+S3_BUCKET = os.environ.get("S3_BUCKET", "")
+S3_REGION = os.environ.get("S3_REGION", "auto")
+S3_ACCESS_KEY_ID = os.environ.get("S3_ACCESS_KEY_ID", "")
+S3_SECRET_ACCESS_KEY = os.environ.get("S3_SECRET_ACCESS_KEY", "")
+_storage_client = None
 
 # OAuth state store (in production, use Redis or similar)
 oauth_states: Dict[str, float] = {}
@@ -54,6 +63,55 @@ app = FastAPI(title="KLECBA Feedback Portal")
 api = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("klecba")
+
+
+def storage_client():
+    global _storage_client
+    if STORAGE_BACKEND != "s3":
+        return None
+    if not all((S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY)):
+        raise RuntimeError("S3 storage is not configured")
+    if _storage_client is None:
+        _storage_client = boto3.client(
+            "s3",
+            endpoint_url=S3_ENDPOINT_URL,
+            region_name=S3_REGION,
+            aws_access_key_id=S3_ACCESS_KEY_ID,
+            aws_secret_access_key=S3_SECRET_ACCESS_KEY,
+        )
+    return _storage_client
+
+
+async def store_submission_file(local_path: Path, storage_key: str) -> str:
+    if STORAGE_BACKEND == "local":
+        final_path = UPLOAD_DIR / Path(storage_key).name
+        local_path.replace(final_path)
+        return storage_key
+    if STORAGE_BACKEND != "s3":
+        raise RuntimeError("Unsupported STORAGE_BACKEND")
+    client_ = storage_client()
+    await asyncio.to_thread(
+        client_.upload_file,
+        str(local_path),
+        S3_BUCKET,
+        storage_key,
+        ExtraArgs={"ContentType": "application/pdf"},
+    )
+    local_path.unlink(missing_ok=True)
+    return storage_key
+
+
+async def read_submission_file(storage_key: str) -> Optional[bytes]:
+    if STORAGE_BACKEND == "local":
+        local_path = UPLOAD_DIR / Path(storage_key).name
+        if not local_path.is_file():
+            return None
+        return await asyncio.to_thread(local_path.read_bytes)
+    if STORAGE_BACKEND != "s3":
+        raise RuntimeError("Unsupported STORAGE_BACKEND")
+    client_ = storage_client()
+    response = await asyncio.to_thread(client_.get_object, Bucket=S3_BUCKET, Key=storage_key)
+    return await asyncio.to_thread(response["Body"].read)
 
 
 @app.on_event("startup")
@@ -736,11 +794,11 @@ async def submit_task(task_id: str, request: Request, file: UploadFile = File(..
 
     submission_id = uid("sub_")
     stored_name = f"{submission_id}.pdf"
-    stored_path = UPLOAD_DIR / stored_name
+    staging_path = UPLOAD_DIR / f".{stored_name}.part"
     total_size = 0
     first_chunk = True
     try:
-        with stored_path.open("wb") as output:
+        with staging_path.open("wb") as output:
             while True:
                 chunk = await file.read(1024 * 1024)
                 if not chunk:
@@ -753,13 +811,20 @@ async def submit_task(task_id: str, request: Request, file: UploadFile = File(..
                     raise HTTPException(413, "PDF exceeds the maximum file size")
                 output.write(chunk)
     except HTTPException:
-        stored_path.unlink(missing_ok=True)
+        staging_path.unlink(missing_ok=True)
         raise
     except Exception:
-        stored_path.unlink(missing_ok=True)
+        staging_path.unlink(missing_ok=True)
         raise HTTPException(500, "Unable to store the uploaded PDF")
     finally:
         await file.close()
+
+    try:
+        await store_submission_file(staging_path, stored_name)
+    except Exception as error:
+        staging_path.unlink(missing_ok=True)
+        logger.error("Submission object storage failed: %s", type(error).__name__)
+        raise HTTPException(503, "Submission storage is unavailable") from error
 
     submission = {
         "id": submission_id,
@@ -772,6 +837,8 @@ async def submit_task(task_id: str, request: Request, file: UploadFile = File(..
         "task_title": task["title"],
         "original_filename": Path(file.filename).name,
         "stored_filename": stored_name,
+        "storage_backend": STORAGE_BACKEND,
+        "storage_key": stored_name,
         "content_type": "application/pdf",
         "size_bytes": total_size,
         "submitted_at": utcnow_iso(),
@@ -780,7 +847,8 @@ async def submit_task(task_id: str, request: Request, file: UploadFile = File(..
     try:
         await db.task_submissions.insert_one(submission)
     except DuplicateKeyError as exc:
-        stored_path.unlink(missing_ok=True)
+        if STORAGE_BACKEND == "local":
+            (UPLOAD_DIR / stored_name).unlink(missing_ok=True)
         raise HTTPException(409, "A submission already exists for this task") from exc
     submission.pop("_id", None)
     return submission
@@ -839,10 +907,18 @@ async def download_submission(submission_id: str, request: Request):
         raise HTTPException(404, "Submission not found")
     if user.get("role") != "admin" and submission.get("user_id") != user.get("user_id"):
         raise HTTPException(403, "You cannot access this submission")
-    stored_path = UPLOAD_DIR / Path(submission["stored_filename"]).name
-    if not stored_path.is_file():
+    try:
+        file_bytes = await read_submission_file(submission.get("storage_key") or submission["stored_filename"])
+    except Exception as error:
+        logger.error("Submission object retrieval failed: %s", type(error).__name__)
+        raise HTTPException(503, "Submission storage is unavailable") from error
+    if file_bytes is None:
         raise HTTPException(404, "Uploaded PDF is missing")
-    return FileResponse(stored_path, media_type="application/pdf", filename=Path(submission["original_filename"]).name)
+    return Response(
+        content=file_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{Path(submission["original_filename"]).name}"'},
+    )
 
 
 # ---------------- Faculty (users with role=faculty) ----------------
