@@ -2,7 +2,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Query,
 from fastapi.responses import StreamingResponse, RedirectResponse, FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 import os
 import asyncio
 import io
@@ -23,6 +23,7 @@ import httpx
 import boto3
 from pymongo.errors import DuplicateKeyError
 from openpyxl import Workbook
+from gridfs.errors import NoFile
 from urllib.parse import urlencode, urlparse, parse_qs
 
 ROOT_DIR = Path(__file__).parent
@@ -55,6 +56,7 @@ S3_REGION = os.environ.get("S3_REGION", "auto")
 S3_ACCESS_KEY_ID = os.environ.get("S3_ACCESS_KEY_ID", "")
 S3_SECRET_ACCESS_KEY = os.environ.get("S3_SECRET_ACCESS_KEY", "")
 _storage_client = None
+_gridfs_bucket = AsyncIOMotorGridFSBucket(db)
 
 # OAuth state store (in production, use Redis or similar)
 oauth_states: Dict[str, float] = {}
@@ -87,6 +89,15 @@ async def store_submission_file(local_path: Path, storage_key: str) -> str:
         final_path = UPLOAD_DIR / Path(storage_key).name
         local_path.replace(final_path)
         return storage_key
+    if STORAGE_BACKEND == "mongodb":
+        file_bytes = await asyncio.to_thread(local_path.read_bytes)
+        await _gridfs_bucket.upload_from_stream(
+            storage_key,
+            file_bytes,
+            metadata={"content_type": "application/pdf"},
+        )
+        local_path.unlink(missing_ok=True)
+        return storage_key
     if STORAGE_BACKEND != "s3":
         raise RuntimeError("Unsupported STORAGE_BACKEND")
     client_ = storage_client()
@@ -107,6 +118,12 @@ async def read_submission_file(storage_key: str) -> Optional[bytes]:
         if not local_path.is_file():
             return None
         return await asyncio.to_thread(local_path.read_bytes)
+    if STORAGE_BACKEND == "mongodb":
+        try:
+            grid_out = await _gridfs_bucket.open_download_stream_by_name(storage_key)
+        except NoFile:
+            return None
+        return await grid_out.read()
     if STORAGE_BACKEND != "s3":
         raise RuntimeError("Unsupported STORAGE_BACKEND")
     client_ = storage_client()

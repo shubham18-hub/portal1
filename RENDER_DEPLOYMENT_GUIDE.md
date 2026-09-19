@@ -19,11 +19,7 @@ The fastest way to deploy is using the included `render.yaml` blueprint:
 - `GOOGLE_CLIENT_ID` - Google OAuth client ID
 - `GOOGLE_CLIENT_SECRET` - Google OAuth client secret
 - `FRONTEND_URL` - Your frontend URL (e.g., https://klecba-frontend.onrender.com)
-- `STORAGE_BACKEND=s3` - Use durable S3-compatible object storage in production
-- `S3_ENDPOINT_URL` - Object storage endpoint, such as Cloudflare R2
-- `S3_BUCKET` - Object storage bucket name
-- `S3_REGION` - Provider region, `auto` for Cloudflare R2
-- `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` - Provider credentials stored only in Render
+- `STORAGE_BACKEND=mongodb` - Store submitted PDFs in MongoDB Atlas GridFS
 
 ## Prerequisites
 
@@ -169,12 +165,7 @@ Render supports Blueprint deployments via `render.yaml`:
 | `GOOGLE_CLIENT_ID` | Yes | Google OAuth Client ID |
 | `GOOGLE_CLIENT_SECRET` | Yes | Google OAuth Client Secret |
 | `FRONTEND_URL` | Yes | Frontend URL for OAuth callbacks |
-| `STORAGE_BACKEND` | Yes | `s3` in production; `local` only for development |
-| `S3_ENDPOINT_URL` | When `s3` | S3-compatible endpoint |
-| `S3_BUCKET` | When `s3` | Durable object-storage bucket |
-| `S3_REGION` | When `s3` | Provider region, `auto` for R2 |
-| `S3_ACCESS_KEY_ID` | When `s3` | Secret-managed access key |
-| `S3_SECRET_ACCESS_KEY` | When `s3` | Secret-managed secret key |
+| `STORAGE_BACKEND` | Yes | `mongodb` for MongoDB Atlas GridFS; `local` only for development |
 
 ### Frontend
 

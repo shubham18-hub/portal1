@@ -28,7 +28,7 @@ services:
       - key: MAX_SUBMISSION_FILE_SIZE
         value: "10485760"
       - key: STORAGE_BACKEND
-        value: s3
+        value: mongodb
       - key: S3_ENDPOINT_URL
         sync: false
       - key: S3_BUCKET
