@@ -14,7 +14,7 @@ services:
       - key: CORS_ORIGINS
         value: https://klecba-frontend.onrender.com
       - key: ALLOWED_EMAIL_DOMAINS
-        value: klecba.edu.in,kle.ac.in,klecba.edu
+        value: klecba.edu.in,kle.ac.in,klecba.edu,gmail.com
       - key: ADMIN_EMAIL
         sync: false
       - key: ADMIN_PASSWORD_HASH
